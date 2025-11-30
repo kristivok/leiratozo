@@ -1,0 +1,20 @@
+# Környezeti változók
+.env
+
+# Virtuális környezet
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Naplók
+*.log
+
+# Futás közben keletkező fájlok és mappák
+audio.wav
+uploads/
+logs/
+chunks/
+templates/transcripts/
+cache/

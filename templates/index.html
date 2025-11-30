@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hangfájl Leiratozó</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        /* --- ÚJ ÉS MÓDOSÍTOTT STÍLUSOK A DRAG-AND-DROP TERÜLETHEZ --- */
+        #drop-area {
+            border: 3px dashed #ccc;
+            border-radius: 10px;
+            padding: 30px;
+            text-align: center;
+            transition: border-color 0.3s, background-color 0.3s;
+            margin-bottom: 20px;
+        }
+        #drop-area p {
+            font-size: 1.2em;
+            color: #666;
+            margin-top: 0;
+        }
+        #drop-area.highlight {
+            border-color: #4CAF50;
+            background-color: #f0fff0;
+        }
+        /* --- VÉGE --- */
+
+        .upload-form {
+            text-align: center;
+        }
+        .file-input {
+            display: none;
+        }
+        .upload-btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+            transition: background-color 0.3s;
+        }
+        .upload-btn:hover {
+            background-color: #45a049;
+        }
+        .upload-btn:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 5px;
+            display: none;
+        }
+        .status.error {
+            background-color: #ffebee;
+            color: #c62828;
+            border: 1px solid #ef9a9a;
+        }
+        .status.success {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+            border: 1px solid #a5d6a7;
+        }
+        .progress {
+            width: 100%;
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 20px 0;
+            display: none;
+        }
+        .progress-bar {
+            width: 0%;
+            height: 100%;
+            background-color: #4CAF50;
+            transition: width 0.3s;
+        }
+        .lock-info {
+            text-align: center;
+            color: #666;
+            margin-top: 20px;
+            font-style: italic;
+        }
+        .info-box {
+            background-color: #e3f2fd;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border: 1px solid #90caf9;
+        }
+        .download-btn {
+            background-color: #2196F3;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+            text-decoration: none;
+        }
+        .download-btn:hover {
+            background-color: #1976D2;
+        }
+        .process-log {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            max-height: 300px;
+            overflow-y: auto;
+            display: none;
+        }
+        .file-info {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #fff3e0;
+            border-radius: 5px;
+            border: 1px solid #ffe0b2;
+            display: none;
+        }
+        #transcriptTextBox {
+            display: none;
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #fff;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        #transcriptContent {
+            white-space: pre-wrap;
+        }
+        #stopBtn {
+            background-color: #f44336;
+        }
+        #stopBtn:hover {
+            background-color: #d32f2f;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Hangfájl Leiratozó</h1>
+
+    <div style="text-align: center; margin-bottom: 20px;">
+        <a href="{{ url_for('static', filename='downloads/convert.exe') }}"
+           class="download-btn"
+           download>
+            Konvertáló letöltése
+        </a>
+    </div>
+
+    <div class="info-box">
+        <strong>Ajánlott formátumok:</strong>
+        <p>A legjobb eredmény érdekében használjon WAV vagy MP3 formátumot.</p>
+    </div>
+
+    <div id="drop-area">
+        <p>Húzd ide a fájlt, vagy kattints a gombra a kiválasztáshoz!</p>
+        <div class="upload-form">
+            <input type="file" id="fileInput" class="file-input" accept=".mp3,.wav,.m4a,.ogg,.mp4,.mov,.flac">
+            <button class="upload-btn" id="selectBtn">Fájl kiválasztása</button>
+            <button class="upload-btn" id="uploadBtn" disabled>Feltöltés és leiratozás</button>
+            <button class="upload-btn" id="stopBtn" style="display: none;">Leállítás</button>
+            <a id="downloadBtn" class="download-btn" style="display: none;">Elkészült leirat letöltése</a>
+        </div>
+    </div>
+    <div class="file-info" id="fileInfo"></div>
+    <div class="progress"><div class="progress-bar"></div></div>
+    <div class="process-log" id="processLog"></div>
+    <div class="status" id="statusMessage"></div>
+    <div id="transcriptTextBox">
+        <h3>Leirat szövege:</h3>
+        <pre id="transcriptContent"></pre>
+    </div>
+
+    {% if locked %}
+    <div class="lock-info">
+        Jelenleg fut egy leiratozás ({{ ip }} által)<br>
+        Kezdés időpontja: {{ start_time }}
+    </div>
+    {% endif %}
+</div>
+
+<script>
+    let pollInterval = null;
+    let startTime = null;
+    let lastStatusMessage = "";
+    
+    // ===== MÓDOSÍTÁS KEZDETE: GLOBÁLIS VÁLTOZÓK A DRAG-AND-DROP TERÜLETHEZ =====
+    const dropArea = document.getElementById('drop-area');
+    const fileInput = document.getElementById('fileInput');
+    const uploadBtn = document.getElementById('uploadBtn');
+    // ===== MÓDOSÍTÁS VÉGE =====
+
+    function updateProcessLog(message) {
+        const log = document.getElementById('processLog');
+        log.style.display = 'block';
+        const timeStr = new Date().toLocaleTimeString();
+        log.innerHTML += `<p>${timeStr} - ${message}</p>`;
+        log.scrollTop = log.scrollHeight;
+    }
+
+    function formatDuration(seconds) {
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = Math.floor(seconds % 60);
+        return `${minutes} perc ${remainingSeconds} másodperc`;
+    }
+
+    document.getElementById('selectBtn').addEventListener('click', () => {
+        fileInput.click();
+    });
+
+    fileInput.addEventListener('change', (e) => {
+        // A fájl kiválasztása után engedélyezzük a feltöltés gombot
+        uploadBtn.disabled = !e.target.files.length > 0;
+    });
+
+    // ===== MÓDOSÍTÁS KEZDETE: DRAG-AND-DROP ESEMÉNYKEZELŐK =====
+    
+    // Megakadályozzuk a böngésző alapértelmezett viselkedését
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, preventDefaults, false);
+        document.body.addEventListener(eventName, preventDefaults, false);
+    });
+
+    // Vizuális kiemelés hozzáadása, amikor a fájlt a terület fölé húzzák
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropArea.addEventListener(eventName, () => dropArea.classList.add('highlight'), false);
+    });
+
+    // Vizuális kiemelés eltávolítása
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, () => dropArea.classList.remove('highlight'), false);
+    });
+
+    // A 'drop' esemény kezelése
+    dropArea.addEventListener('drop', handleDrop, false);
+
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    function handleDrop(e) {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+
+        // A behúzott fájlt betöltjük a rejtett file inputba
+        if (files.length > 0) {
+            fileInput.files = files;
+            // Manuálisan kiváltjuk a 'change' eseményt, hogy a gomb engedélyeződjön
+            const event = new Event('change');
+            fileInput.dispatchEvent(event);
+        }
+    }
+    // ===== MÓDOSÍTÁS VÉGE =====
+
+
+    async function startStatusPolling() {
+        pollInterval = setInterval(async () => {
+            try {
+                const statusResponse = await fetch('/status');
+                const statusData = await statusResponse.json();
+                if (statusData.currentStep && statusData.currentStep.trim().length > 0) {
+                    if (statusData.currentStep !== lastStatusMessage) {
+                        updateProcessLog(statusData.currentStep);
+                        lastStatusMessage = statusData.currentStep;
+                    }
+                }
+            } catch (error) {
+                console.error('Státusz lekérdezési hiba:', error);
+            }
+        }, 1000);
+    }
+
+    function stopStatusPolling() {
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+        }
+    }
+
+    uploadBtn.addEventListener('click', async () => {
+        const file = fileInput.files[0];
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const progress = document.querySelector('.progress');
+        const progressBar = document.querySelector('.progress-bar');
+        const statusMessage = document.getElementById('statusMessage');
+        const stopBtn = document.getElementById('stopBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const processLog = document.getElementById('processLog');
+        const fileInfo = document.getElementById('fileInfo');
+        const transcriptBox = document.getElementById('transcriptTextBox');
+        const transcriptContent = document.getElementById('transcriptContent');
+
+        progress.style.display = 'block';
+        uploadBtn.disabled = true;
+        stopBtn.style.display = 'inline-block';
+        statusMessage.style.display = 'none';
+        downloadBtn.style.display = 'none';
+        processLog.innerHTML = '';
+        processLog.style.display = 'block';
+        fileInfo.style.display = 'none';
+        transcriptBox.style.display = 'none';
+        lastStatusMessage = "";
+
+        startTime = new Date();
+        updateProcessLog('Feltöltés és feldolgozás elindult...');
+        startStatusPolling();
+
+        try {
+            const response = await fetch('/upload', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+
+            stopStatusPolling();
+            stopBtn.style.display = 'none';
+
+            if (result.error) {
+                statusMessage.textContent = result.error;
+                if (result.details) {
+                    statusMessage.textContent += ` (${result.details})`;
+                }
+                statusMessage.className = 'status error';
+                updateProcessLog(`Hiba: ${result.error}`);
+            } else {
+                statusMessage.textContent = result.success;
+                statusMessage.className = 'status success';
+                updateProcessLog('Feldolgozás sikeresen befejeződött!');
+
+                downloadBtn.href = `/download/${result.filename}`;
+                downloadBtn.style.display = 'inline-block';
+                downloadBtn.download = result.filename;
+                updateProcessLog('A leirat letöltésre kész!');
+
+                if (result.file_info) {
+                    const info = result.file_info;
+                    fileInfo.innerHTML = `
+                        <strong>Fájl információk:</strong><br>
+                        Név: ${info.name}<br>
+                        Méret: ${info.size_mb} MB<br>
+                        Becsült hossz: ${formatDuration(info.duration_s)}
+                    `;
+                    fileInfo.style.display = 'block';
+                }
+                if (result.text) {
+                    transcriptContent.textContent = result.text;
+                    transcriptBox.style.display = 'block';
+                }
+            }
+        } catch (error) {
+            stopStatusPolling();
+            stopBtn.style.display = 'none';
+            statusMessage.textContent = 'Hiba történt a feltöltés során!';
+            statusMessage.className = 'status error';
+            updateProcessLog(`Hiba történt: ${error.message}`);
+        } finally {
+            statusMessage.style.display = 'block';
+            progress.style.display = 'none';
+            // Itt direkt nem engedélyezzük újra a gombot, amíg nincs új fájl kiválasztva
+            // uploadBtn.disabled = false; 
+            fileInput.value = '';
+
+            const endTime = new Date();
+            const elapsedSec = (endTime - startTime) / 1000;
+            updateProcessLog(`A teljes folyamat ennyi ideig tartott: ${formatDuration(elapsedSec)}`);
+        }
+    });
+
+    document.getElementById('stopBtn').addEventListener('click', async () => {
+        const stopBtn = document.getElementById('stopBtn');
+        stopBtn.disabled = true;
+        updateProcessLog('Leállítás indítása...');
+
+        try {
+            const response = await fetch('/stop', { method: 'POST' });
+            const result = await response.json();
+            updateProcessLog(result.status || 'Leállítás megtörtént.');
+        } catch (error) {
+            updateProcessLog(`Leállítási hiba: ${error.message}`);
+        } finally {
+            stopBtn.style.display = 'none';
+            stopStatusPolling();
+        }
+    });
+</script>
+</body>
+</html>
