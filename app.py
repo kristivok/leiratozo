@@ -1,5 +1,5 @@
 from flask import Flask, request, render_template, send_from_directory, jsonify
-import os, sys, subprocess, time, sqlite3
+import os, sys, subprocess, time, sqlite3, threading, re
 from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv, set_key
@@ -12,6 +12,16 @@ DEFAULT_CACHE = BASE_DIR / "cache"
 # Aktívan futó subprocessek tárolása a /stop végpont számára
 _active = {"fast": None, "diar": None, "transcript": None}
 _stop_requested = False
+
+# Folyamat előrehaladása – /status végpont tölti fel, frontend olvassa
+_progress = {
+    "step": 0,        # 0=idle, 1=convert, 2=diarize, 3=transcribe
+    "stepName": "",
+    "percent": 0,     # 0-100
+    "startTime": None,
+    "estimatedTotal": 0,
+    "detail": "",
+}
 
 
 def _prompt_env_values():
@@ -79,7 +89,19 @@ def logprint(msg):
 
 @app.route("/status")
 def status():
-    return jsonify({"currentStep": status_messages[-1] if status_messages else ""})
+    elapsed = int(time.time() - _progress["startTime"]) if _progress.get("startTime") else 0
+    estimated = _progress.get("estimatedTotal", 0)
+    remaining = max(0, int(estimated - elapsed)) if estimated > 0 else 0
+    return jsonify({
+        "currentStep":   status_messages[-1] if status_messages else "",
+        "step":          _progress.get("step", 0),
+        "stepName":      _progress.get("stepName", ""),
+        "percent":       _progress.get("percent", 0),
+        "elapsed":       elapsed,
+        "estimatedTotal": estimated,
+        "remaining":     remaining,
+        "detail":        _progress.get("detail", ""),
+    })
 
 
 def init_db():
@@ -101,6 +123,41 @@ def init_db():
 
 
 init_db()
+
+
+def _stream_proc(proc, on_line=None):
+    """Olvassa a subprocess stdout-ját soronként; stderr-t külön thread-ben üríti (deadlock megelőzés)."""
+    stderr_buf = []
+
+    def _drain():
+        stderr_buf.extend(proc.stderr.read().splitlines())
+
+    t = threading.Thread(target=_drain, daemon=True)
+    t.start()
+
+    stdout_lines = []
+    for raw in proc.stdout:
+        line = raw.rstrip().replace("\r", "")
+        if line:
+            stdout_lines.append(line)
+            logprint(line)
+            if on_line:
+                on_line(line)
+
+    proc.stdout.close()
+    rc = proc.wait()
+    t.join(timeout=10)
+    return "\n".join(stdout_lines), "\n".join(stderr_buf), rc
+
+
+def _on_asr_progress(line):
+    """PROGRESS: X/Y sorokat értelmezi és frissíti a _progress dict-et."""
+    m = re.match(r"PROGRESS:\s*(\d+)/(\d+)", line)
+    if m:
+        done, total = int(m.group(1)), int(m.group(2))
+        pct = int(22 + (done / total) * 78) if total > 0 else 22
+        _progress["percent"] = pct
+        _progress["detail"] = f"{done}/{total} turn"
 
 
 def create_lock(ip):
@@ -204,6 +261,8 @@ def upload():
 
     status_messages.clear()
     _stop_requested = False
+    _progress.update({"step": 0, "stepName": "", "percent": 0,
+                       "startTime": None, "estimatedTotal": 0, "detail": ""})
 
     try:
         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -213,6 +272,7 @@ def upload():
 
         create_lock(ip)
         start_time_sec = time.time()
+        _progress["startTime"] = start_time_sec
 
         filename = file.filename
         file_ext = filename.rsplit(".", 1)[-1].lower()
@@ -220,6 +280,7 @@ def upload():
         file.save(filepath)
 
         # 1. lépés: konvertálás WAV-ra (ffmpeg)
+        _progress.update({"step": 1, "stepName": "convert", "percent": 1, "detail": ""})
         logprint("Hangfájl konvertálása kezdődik...")
         result = subprocess.run(
             [sys.executable, str(BASE_DIR / "convert.py"), str(filepath)],
@@ -229,6 +290,7 @@ def upload():
         if result.returncode != 0 or "Sikeres konvertálás" not in result.stdout:
             remove_lock()
             return jsonify({"error": "Konvertálási hiba!", "details": result.stderr})
+        _progress["percent"] = 5
 
         audio_converted = BASE_DIR / "audio.wav"
         if not os.path.exists(audio_converted):
@@ -241,6 +303,7 @@ def upload():
         avg_factor = get_average_factor()
         if avg_factor and avg_factor > 0:
             estimated_total_sec = duration * avg_factor
+            _progress["estimatedTotal"] = int(estimated_total_sec)
             minutes = int(estimated_total_sec // 60)
             seconds = int(estimated_total_sec % 60)
             logprint(f"Becsült feldolgozási idő: kb. {minutes} perc {seconds} mp")
@@ -248,42 +311,48 @@ def upload():
             logprint("Nincs elegendő adat a becsült feldolgozási időhöz, folytatjuk...")
 
         # 2. lépés: diarizáció (GPU)
+        _progress.update({"step": 2, "stepName": "diarize", "percent": 5, "detail": ""})
         logprint("Diarizáció kezdődik...")
         diar_proc = subprocess.Popen(
             [sys.executable, str(BASE_DIR / "diarization.py")],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1
         )
         _active["diar"] = diar_proc
-        diar_stdout, diar_stderr = diar_proc.communicate()
+        diar_stdout, diar_stderr, diar_rc = _stream_proc(diar_proc)
         _active["diar"] = None
 
         if _stop_requested:
             remove_lock()
             return jsonify({"error": "Leállítva."})
 
-        if diar_proc.returncode != 0 or "Diarizáció kész" not in diar_stdout:
+        if diar_rc != 0 or "Diarizáció kész" not in diar_stdout:
             remove_lock()
             return jsonify({"error": "Diarizációs hiba!", "details": diar_stderr})
+
+        _progress["percent"] = 22
 
         if _stop_requested:
             remove_lock()
             return jsonify({"error": "Leállítva."})
 
-        # 4. lépés: végleges leirat (Trendency modell, turnönként)
+        # 3. lépés: végleges leirat (Trendency modell, batch ASR)
+        _progress.update({"step": 3, "stepName": "transcribe", "percent": 22, "detail": ""})
         logprint("Leiratozás kezdődik (diarizált turn-ök)...")
         transcript_proc = subprocess.Popen(
             [sys.executable, str(BASE_DIR / "transcript_after_diarization.py")],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1
         )
         _active["transcript"] = transcript_proc
-        transcript_stdout, transcript_stderr = transcript_proc.communicate()
+        transcript_stdout, transcript_stderr, transcript_rc = _stream_proc(
+            transcript_proc, on_line=_on_asr_progress
+        )
         _active["transcript"] = None
 
         if _stop_requested:
             remove_lock()
             return jsonify({"error": "Leállítva."})
 
-        if transcript_proc.returncode != 0 or "A leiratozott beszélgetés mentve" not in transcript_stdout:
+        if transcript_rc != 0 or "A leiratozott beszélgetés mentve" not in transcript_stdout:
             remove_lock()
             return jsonify({"error": "Leiratozási hiba!", "details": transcript_stderr})
 

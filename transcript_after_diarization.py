@@ -155,8 +155,15 @@ def transcribe_turns(turns, audio_file):
 
     asr, model, processor = _load_trendency_pipeline()
     log(f"Batch ASR futtatása ({len(inputs)} turn, batch_size={ASR_BATCH_SIZE}, num_beams={_num_beams})...")
+    outputs = []
     try:
-        outputs = list(asr(inputs, return_timestamps=False, generate_kwargs=GENERATE_KWARGS))
+        for i in range(0, len(inputs), ASR_BATCH_SIZE):
+            batch = inputs[i:i + ASR_BATCH_SIZE]
+            batch_out = list(asr(batch, return_timestamps=False, generate_kwargs=GENERATE_KWARGS))
+            outputs.extend(batch_out)
+            done = min(i + ASR_BATCH_SIZE, len(inputs))
+            print(f"PROGRESS: {done}/{len(inputs)}", flush=True)
+            log(f"  {done}/{len(inputs)} turn kész")
     finally:
         del asr, model, processor
         if torch.cuda.is_available():
