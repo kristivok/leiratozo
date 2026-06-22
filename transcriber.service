@@ -1,0 +1,19 @@
+[Unit]
+Description=Transcriber Flask App
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kkatai
+Group=kkatai
+WorkingDirectory=/srv/transcriber_app
+ExecStart=/srv/transcriber_app/venv/bin/python3 /srv/transcriber_app/app.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+# Optional env file for secrets/config (ignored if missing)
+EnvironmentFile=-/srv/transcriber_app/.env
+
+[Install]
+WantedBy=multi-user.target

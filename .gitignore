@@ -1,0 +1,46 @@
+# Érzékeny konfigurációs adatok
+.env
+
+# Virtuális környezetek
+venv/
+venv.bak*/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Naplók
+*.log
+
+# Futás közben keletkező fájlok és mappák
+audio.wav
+uploads/
+logs/
+chunks/
+templates/transcripts/
+cache/
+runtime/
+transcriber.lock
+
+# Generált kimeneti fájlok
+diarization_result.json
+final_transcription.json
+status.json
+
+# Régi munkamappák (root tulajdonú, nem törölhető)
+working_files/
+
+# Finomhangolási adatok (nagy méret)
+fine_tune/
+
+# Biztonsági mentések
+backups/
+
+# Windows bináris és egyéb nagy fájlok
+*.exe
+*.deb
+
+# IDE
+.idea/
+.vscode/
