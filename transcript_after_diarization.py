@@ -1,13 +1,11 @@
 import json
 import os
 import datetime
-import time
 import numpy as np
 import torch
 from collections import defaultdict
 from pydub import AudioSegment
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
-from difflib import SequenceMatcher, get_close_matches
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -15,10 +13,11 @@ BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
 if ENV_FILE.exists():
     load_dotenv(ENV_FILE, override=False)
+
 DEFAULT_CACHE = BASE_DIR / "cache"
 CACHE_DIR = Path(os.environ.get("HF_CACHE_DIR", DEFAULT_CACHE))
 os.environ.setdefault("HF_CACHE_DIR", str(CACHE_DIR))
-DEFAULT_CHUNKS_DIR = BASE_DIR / "chunks"
+
 TRANSCRIPTS_DIR = BASE_DIR / "templates" / "transcripts"
 DIARIZATION_JSON = BASE_DIR / "diarization_result.json"
 AUDIO_PATH = BASE_DIR / "audio.wav"
@@ -26,11 +25,13 @@ AUDIO_PATH = BASE_DIR / "audio.wav"
 MODEL_ID = os.environ.get("WHISPER_MODEL_ID", "Trendency/whisper-large-v3-hu")
 MODEL_DIR = os.environ.get("WHISPER_MODEL_DIR", "").strip()
 MODEL_PATH = MODEL_DIR if MODEL_DIR else MODEL_ID
-
 OFFLINE = os.environ.get("HF_OFFLINE", "0") == "1"
 
+# ASR_BATCH_SIZE: hány audio chunk kerül egy GPU batch-be.
+# RTX 4070 Ti SUPER (16 GB): 16 ajánlott, kisebb GPU-nál csökkentsd.
+ASR_BATCH_SIZE = int(os.environ.get("ASR_BATCH_SIZE", "16"))
+
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 if OFFLINE:
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -39,15 +40,20 @@ if OFFLINE:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_flush_denormal(True)
 
+
 def log(msg): print(msg, flush=True)
 
-def load_diarization_results(diarization_file):
-    with open(diarization_file, "r", encoding="utf-8") as f:
+
+# ── Diarizáció feldolgozása ───────────────────────────────────────────────────
+
+def load_diarization_results(path):
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def normalize_and_sort_segments(diarization_data):
+
+def normalize_and_sort_segments(data):
     norm = []
-    for seg in diarization_data:
+    for seg in data:
         try:
             spk = str(seg["speaker"])
             st = float(seg["start"])
@@ -59,7 +65,9 @@ def normalize_and_sort_segments(diarization_data):
     norm.sort(key=lambda s: (s["start"], s["end"]))
     return norm
 
+
 def merge_consecutive_same_speaker(segments, max_gap=1.0):
+    """Azonos szomszédos speaker turn-öket összefűz, ha a köz <= max_gap mp."""
     if not segments:
         return []
     merged = []
@@ -73,37 +81,8 @@ def merge_consecutive_same_speaker(segments, max_gap=1.0):
     merged.append(cur)
     return merged
 
-def clean_chunks_directory(output_dir=DEFAULT_CHUNKS_DIR):
-    output_dir = Path(output_dir)
-    if output_dir.exists():
-        for f in os.listdir(output_dir):
-            p = output_dir / f
-            try:
-                if os.path.isfile(p): os.unlink(p)
-            except Exception as e:
-                log(f"Hiba a {p} törlésekor: {e}")
-        log(f"A {output_dir} mappa tartalma törölve.")
-    else:
-        os.makedirs(output_dir, exist_ok=True)
-        log(f"A {output_dir} mappa létrehozva.")
 
-def split_audio(audio_file, segments, output_dir=DEFAULT_CHUNKS_DIR):
-    output_dir = Path(output_dir)
-    clean_chunks_directory(output_dir)
-    audio_file = Path(audio_file)
-    if not audio_file.exists():
-        raise FileNotFoundError(f"Nem található audio fájl: {audio_file}")
-    audio = AudioSegment.from_wav(audio_file)
-    chunk_files = []
-    for i, seg in enumerate(segments):
-        start, end, spk = seg["start"], seg["end"], seg["speaker"]
-        chunk = audio[int(start * 1000):int(end * 1000)]
-        fn = output_dir / f"chunk_{i}_{spk}.wav"
-        chunk.export(str(fn), format="wav")
-        chunk_files.append({"file": str(fn), "speaker": spk, "start": start, "end": end})
-        log(f"Exportáltam: {fn.name} ({end - start:.1f}s, {spk})")
-    log(f"Szeletelés kész. Turn-ök: {len(chunk_files)}")
-    return chunk_files
+# ── ASR pipeline ─────────────────────────────────────────────────────────────
 
 def _load_trendency_pipeline():
     cuda_ok = torch.cuda.is_available()
@@ -111,20 +90,19 @@ def _load_trendency_pipeline():
     device_index = 0 if cuda_ok else -1
     device_str = "cuda:0" if cuda_ok else "cpu"
 
-    log(f"Trendency modell betöltése: {MODEL_PATH} | eszköz: {device_str}")
+    log(f"Trendency modell betöltése: {MODEL_PATH} | {device_str} | batch={ASR_BATCH_SIZE}")
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
         MODEL_PATH,
         torch_dtype=dtype,
-        cache_dir=str(CACHE_DIR),
-        local_files_only=OFFLINE,
         low_cpu_mem_usage=True,
         use_safetensors=True,
+        cache_dir=str(CACHE_DIR),
+        local_files_only=OFFLINE,
+        attn_implementation="eager",
     ).to(device_str).eval()
 
     processor = AutoProcessor.from_pretrained(
-        MODEL_PATH,
-        cache_dir=str(CACHE_DIR),
-        local_files_only=OFFLINE,
+        MODEL_PATH, cache_dir=str(CACHE_DIR), local_files_only=OFFLINE,
     )
 
     asr = pipeline(
@@ -134,99 +112,53 @@ def _load_trendency_pipeline():
         feature_extractor=processor.feature_extractor,
         torch_dtype=dtype,
         device=device_index,
-        chunk_length_s=None,
+        # chunk_length_s: Whisper max 30s – hosszú turn-öket automatikusan darabolja
+        chunk_length_s=30,
+        stride_length_s=1,
+        batch_size=ASR_BATCH_SIZE,
     )
-    return asr, model, processor, device_str
+    return asr, model, processor
 
-def make_internal_chunks(turn_audio, chunk_size=28.0, overlap=1.0):
-    length = len(turn_audio) / 1000.0
-    chunks = []
-    start = 0.0
-    while start < length:
-        end = min(start + chunk_size, length)
-        chunks.append((start, end))
-        start += (chunk_size - overlap)
-    return chunks
 
-def stitch_texts(texts):
-    if not texts:
-        return ""
-    final = texts[0].strip()
-    for next_text in texts[1:]:
-        next_text = next_text.strip()
-        if not next_text:
-            continue
-        prev_words = final.split()[-12:]
-        next_words = next_text.split()[:12]
-        prev_join = " ".join(prev_words)
-        next_join = " ".join(next_words)
-        ratio = SequenceMatcher(None, prev_join, next_join).ratio()
-        if ratio > 0.68:
-            cut_point = len(prev_words)
-            final = " ".join(final.split()[:-cut_point] + next_text.split())
-        else:
-            final = final + " " + next_text
-    return " ".join(final.split())
+def transcribe_turns(turns, audio_file):
+    """
+    Az összes speaker turn-t batch-ben átírja.
+    Az audio.wav-ot egyszer tölti be memóriába – nincs per-turn disk I/O.
+    """
+    log(f"Audio betöltése memóriába: {audio_file}")
+    full_audio = AudioSegment.from_wav(str(audio_file))
 
-def transcribe_chunks(chunk_files):
-    asr, model, processor, device_str = _load_trendency_pipeline()
-    results = []
+    log(f"Turn-ök numpy array-be konvertálása ({len(turns)} db)...")
+    inputs = []
+    for turn in turns:
+        start_ms = int(turn["start"] * 1000)
+        end_ms = int(turn["end"] * 1000)
+        chunk = full_audio[start_ms:end_ms]
+        samples = np.array(chunk.get_array_of_samples(), dtype=np.float32) / 32768.0
+        inputs.append({"array": samples, "sampling_rate": 16000})
+
+    asr, model, processor = _load_trendency_pipeline()
+    log(f"Batch ASR futtatása ({len(inputs)} turn, batch_size={ASR_BATCH_SIZE})...")
     try:
-        total = len(chunk_files)
-        for i, ch in enumerate(chunk_files, 1):
-            log(f"[{i}/{total}] Leiratozás turnönként: {os.path.basename(ch['file'])} ({ch['speaker']})")
-            turn_audio = AudioSegment.from_wav(ch["file"])
-            internal_chunks = make_internal_chunks(turn_audio)
-            turn_partial_texts = []
-            for (cs, ce) in internal_chunks:
-                part = turn_audio[int(cs * 1000):int(ce * 1000)]
-                # In-memory numpy array – nincs disk I/O
-                samples = np.array(part.get_array_of_samples(), dtype=np.float32) / 32768.0
-                out = asr({"array": samples, "sampling_rate": 16000}, return_timestamps=False)
-                txt = (out.get("text", "") or "").strip()
-                if txt:
-                    turn_partial_texts.append(txt)
-            final_text = stitch_texts(turn_partial_texts)
-            results.append({
-                "speaker": ch["speaker"],
-                "start": ch["start"],
-                "end": ch["end"],
-                "text": final_text
-            })
+        outputs = list(asr(inputs, return_timestamps=False))
     finally:
         del asr, model, processor
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            log("GPU cache törölve.")
+
+    results = []
+    for turn, out in zip(turns, outputs):
+        results.append({
+            "speaker": turn["speaker"],
+            "start": turn["start"],
+            "end": turn["end"],
+            "text": (out.get("text", "") or "").strip(),
+        })
     return results
 
-def refine_with_fast_whisper(transcribed_segments, fast_json_path):
-    fast_json_path = Path(fast_json_path)
-    if not fast_json_path.exists():
-        log("Fast Whisper referencia nem elérhető, finomítás kihagyva.")
-        return transcribed_segments
-    try:
-        with open(fast_json_path, "r", encoding="utf-8") as f:
-            fast_data = json.load(f)
-    except Exception as e:
-        log(f"Fast Whisper JSON betöltési hiba, finomítás kihagyva: {e}")
-        return transcribed_segments
-    full_sentences = []
-    for s in fast_data:
-        t = (s.get("text") or "").strip()
-        if t:
-            parts = [p.strip() for p in t.replace("?", ".").replace("!", ".").split(".") if p.strip()]
-            full_sentences.extend(parts)
-    if not full_sentences:
-        log("Fast Whisper referencia üres, finomítás kihagyva.")
-        return transcribed_segments
-    for seg in transcribed_segments:
-        t = (seg.get("text") or "").strip()
-        if not t:
-            continue
-        matches = get_close_matches(t, full_sentences, n=1, cutoff=0.6)
-        if matches:
-            seg["text"] = matches[0]
-    return transcribed_segments
+
+# ── Mentés ───────────────────────────────────────────────────────────────────
 
 def summarize_speaker_times(segments):
     d = defaultdict(float)
@@ -234,50 +166,54 @@ def summarize_speaker_times(segments):
         d[s["speaker"]] += (s["end"] - s["start"])
     return {k: round(v, 3) for k, v in d.items()}
 
+
 def save_json(path, obj):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=4, ensure_ascii=False)
 
-if __name__ == "__main__":
-    diarization_file = DIARIZATION_JSON
-    audio_file = AUDIO_PATH
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = TRANSCRIPTS_DIR
-    os.makedirs(output_dir, exist_ok=True)
-    output_file = output_dir / f"final_transcription_{timestamp}.json"
 
-    log("--- Folyamat indítása ---")
-    log("1) Diarizációs adatok betöltése és rendezése...")
-    diarization_data = load_diarization_results(diarization_file)
+# ── Belépési pont ─────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
+    output_file = TRANSCRIPTS_DIR / f"final_transcription_{timestamp}.json"
+
+    log("--- Leiratozás indul ---")
+
+    log("1) Diarizációs adatok betöltése...")
+    diarization_data = load_diarization_results(DIARIZATION_JSON)
     if not diarization_data:
         log("ÜRES diarizáció! Leállok.")
         raise SystemExit(1)
 
     sorted_segments = normalize_and_sort_segments(diarization_data)
-    log(f"Eredeti turn-ök száma: {len(sorted_segments)}")
+    log(f"   Szegmensek: {len(sorted_segments)}")
 
     merged_turns = merge_consecutive_same_speaker(sorted_segments, max_gap=1.0)
-    log(f"Összefűzött turn-ök: {len(merged_turns)}")
+    log(f"   Összefűzött turn-ök: {len(merged_turns)}")
 
-    log("2) Szeletelés turn-önként...")
-    chunk_files = split_audio(audio_file, merged_turns, output_dir=DEFAULT_CHUNKS_DIR)
-    if not chunk_files:
-        log("Nincs mit leiratozni (0 turn). Leállok.")
+    if not merged_turns:
+        log("Nincs leiratozható turn. Leállok.")
         raise SystemExit(1)
 
-    log("3) Leiratozás chunkokkal (Trendency modell)...")
-    transcription_results = transcribe_chunks(chunk_files)
+    log("2) Batch ASR (Trendency modell, GPU)...")
+    transcription_results = transcribe_turns(merged_turns, AUDIO_PATH)
 
-    log("4) Összegzés és mentés...")
+    log("3) Mentés...")
     speaker_summary = summarize_speaker_times(merged_turns)
     final_output = {"summary": speaker_summary, "transcription": transcription_results}
     save_json(output_file, final_output)
 
-    latest_json = output_dir / "latest_final.json"
+    latest_json = TRANSCRIPTS_DIR / "latest_final.json"
     save_json(latest_json, final_output)
 
-    clean_text = "\n".join([seg["text"].strip() for seg in transcription_results if seg["text"].strip()])
-    clean_output_file = output_dir / f"final_text_{timestamp}.txt"
+    clean_text = "\n".join(
+        seg["text"].strip()
+        for seg in transcription_results
+        if seg["text"].strip()
+    )
+    clean_output_file = TRANSCRIPTS_DIR / f"final_text_{timestamp}.txt"
     with open(clean_output_file, "w", encoding="utf-8") as f:
         f.write(clean_text)
 

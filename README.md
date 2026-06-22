@@ -67,6 +67,7 @@ Az első `python app.py` indításkor a program bekéri és `.env`-be menti a sz
 | `WHISPER_MODEL_DIR` | Lokális model mappa (opcionális) | – |
 | `DIARIZATION_DEVICE` | Diarizáció eszköze (`cuda`/`cpu`) | `cuda` |
 | `DIARIZATION_BATCH_SIZE` | Pyannote batch méret | `8` |
+| `ASR_BATCH_SIZE` | Hány turn kerül egy GPU batch-be | `16` (16 GB VRAM-hoz) |
 
 ## Futtatás
 
