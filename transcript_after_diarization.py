@@ -42,7 +42,7 @@ GENERATE_KWARGS = {
     "do_sample": False,
     "temperature": 0.0,
     "no_repeat_ngram_size": 3,
-    "max_new_tokens": 445,
+    "max_new_tokens": 444,
 }
 
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
