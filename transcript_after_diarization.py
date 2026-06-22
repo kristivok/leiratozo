@@ -35,10 +35,11 @@ ASR_BATCH_SIZE = int(os.environ.get("ASR_BATCH_SIZE", "8"))
 # Greedy dekódolás (num_beams=1): a beam search-hez képest töredék VRAM
 # (beam_size × batch mérete × szekvencia = sokszoros memória).
 # A Trendency modell alapból beam search-t futtat, ezért felül kell írni.
+_num_beams = int(os.environ.get("ASR_NUM_BEAMS", "5"))
 GENERATE_KWARGS = {
     "task": "transcribe",
     "language": "hu",
-    "num_beams": 1,
+    "num_beams": _num_beams,
     "do_sample": False,
     "temperature": 0.0,
     "no_repeat_ngram_size": 3,
@@ -153,7 +154,7 @@ def transcribe_turns(turns, audio_file):
         inputs.append({"array": samples, "sampling_rate": 16000})
 
     asr, model, processor = _load_trendency_pipeline()
-    log(f"Batch ASR futtatása ({len(inputs)} turn, batch_size={ASR_BATCH_SIZE}, num_beams=1)...")
+    log(f"Batch ASR futtatása ({len(inputs)} turn, batch_size={ASR_BATCH_SIZE}, num_beams={_num_beams})...")
     try:
         outputs = list(asr(inputs, return_timestamps=False, generate_kwargs=GENERATE_KWARGS))
     finally:
