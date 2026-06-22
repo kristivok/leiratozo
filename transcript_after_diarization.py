@@ -28,8 +28,22 @@ MODEL_PATH = MODEL_DIR if MODEL_DIR else MODEL_ID
 OFFLINE = os.environ.get("HF_OFFLINE", "0") == "1"
 
 # ASR_BATCH_SIZE: hány audio chunk kerül egy GPU batch-be.
-# RTX 4070 Ti SUPER (16 GB): 16 ajánlott, kisebb GPU-nál csökkentsd.
-ASR_BATCH_SIZE = int(os.environ.get("ASR_BATCH_SIZE", "16"))
+# num_beams=1 (greedy) esetén: RTX 4070 Ti SUPER (16 GB) → 8 biztonságos,
+# kisebb GPU-nál (pl. 8 GB) → 2-4.
+ASR_BATCH_SIZE = int(os.environ.get("ASR_BATCH_SIZE", "8"))
+
+# Greedy dekódolás (num_beams=1): a beam search-hez képest töredék VRAM
+# (beam_size × batch mérete × szekvencia = sokszoros memória).
+# A Trendency modell alapból beam search-t futtat, ezért felül kell írni.
+GENERATE_KWARGS = {
+    "task": "transcribe",
+    "language": "hu",
+    "num_beams": 1,
+    "do_sample": False,
+    "temperature": 0.0,
+    "no_repeat_ngram_size": 3,
+    "max_new_tokens": 445,
+}
 
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -37,6 +51,7 @@ if OFFLINE:
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     os.environ["HF_HUB_OFFLINE"] = "1"
 
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_flush_denormal(True)
 
@@ -138,9 +153,9 @@ def transcribe_turns(turns, audio_file):
         inputs.append({"array": samples, "sampling_rate": 16000})
 
     asr, model, processor = _load_trendency_pipeline()
-    log(f"Batch ASR futtatása ({len(inputs)} turn, batch_size={ASR_BATCH_SIZE})...")
+    log(f"Batch ASR futtatása ({len(inputs)} turn, batch_size={ASR_BATCH_SIZE}, num_beams=1)...")
     try:
-        outputs = list(asr(inputs, return_timestamps=False))
+        outputs = list(asr(inputs, return_timestamps=False, generate_kwargs=GENERATE_KWARGS))
     finally:
         del asr, model, processor
         if torch.cuda.is_available():
