@@ -2,6 +2,7 @@ import json
 import os
 import datetime
 import time
+import numpy as np
 import torch
 from collections import defaultdict
 from pydub import AudioSegment
@@ -137,7 +138,7 @@ def _load_trendency_pipeline():
     )
     return asr, model, processor, device_str
 
-def make_internal_chunks(turn_audio, chunk_size=25.0, overlap=3.0):
+def make_internal_chunks(turn_audio, chunk_size=28.0, overlap=1.0):
     length = len(turn_audio) / 1000.0
     chunks = []
     start = 0.0
@@ -179,12 +180,9 @@ def transcribe_chunks(chunk_files):
             turn_partial_texts = []
             for (cs, ce) in internal_chunks:
                 part = turn_audio[int(cs * 1000):int(ce * 1000)]
-                tmpfile = f"/tmp/_intchunk_{os.getpid()}_{time.time()}.wav"
-                part.export(tmpfile, format="wav")
-                out = asr(tmpfile, return_timestamps=False)
-                if device_str.startswith("cuda"):
-                    torch.cuda.synchronize()
-                os.unlink(tmpfile)
+                # In-memory numpy array – nincs disk I/O
+                samples = np.array(part.get_array_of_samples(), dtype=np.float32) / 32768.0
+                out = asr({"array": samples, "sampling_rate": 16000}, return_timestamps=False)
                 txt = (out.get("text", "") or "").strip()
                 if txt:
                     turn_partial_texts.append(txt)
@@ -269,10 +267,6 @@ if __name__ == "__main__":
 
     log("3) Leiratozás chunkokkal (Trendency modell)...")
     transcription_results = transcribe_chunks(chunk_files)
-
-    fast_ref = output_dir / "fast_transcript.json"
-    log("3/b) Fast Whisper kontextus szerinti finomítás...")
-    transcription_results = refine_with_fast_whisper(transcription_results, fast_ref)
 
     log("4) Összegzés és mentés...")
     speaker_summary = summarize_speaker_times(merged_turns)

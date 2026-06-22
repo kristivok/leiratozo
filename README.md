@@ -8,23 +8,22 @@ Magyar nyelvű hangfájl-leiratozó webalkalmazás, amely **pyannote** beszélő
 Feltöltött fájl
       │
       ▼
- convert.py          → audio.wav (16kHz mono WAV, ffmpeg)
+ convert.py              → audio.wav (16kHz mono WAV, ffmpeg)
       │
-      ├─────────────────────────────────────┐
-      ▼                                     ▼
-fast_whisper_transcribe.py           diarization.py
-(faster-whisper large-v3, GPU)       (pyannote 3.1, GPU)
-Teljes referencia-leirat              Beszélői szegmensek
-fast_transcript.json                  diarization_result.json
-      │                                     │
-      └──────────────┬──────────────────────┘
-                     ▼
-        transcript_after_diarization.py
-        (Trendency/whisper-large-v3-hu, turnönként, GPU)
-        → Végleges leirat + szöveg mentése
+      ▼
+ diarization.py          → diarization_result.json
+ (pyannote 3.1, GPU)       Beszélői szegmensek + időbélyegek
+      │
+      ▼
+ transcript_after_diarization.py
+ (Trendency/whisper-large-v3-hu, GPU)
+ Turnönkénti ASR, in-memory feldolgozás
+      │
+      ▼
+ final_transcription_TIMESTAMP.json + final_text_TIMESTAMP.txt
 ```
 
-**Párhuzamos futás:** a Fast Whisper és a diarizáció egyszerre indul. A Fast Whisper kimenetét (`fast_transcript.json`) a végleges leirat fuzzy egyeztetéssel finomítja.
+A diarizáció és az ASR **sorosan fut**: mindkettő a teljes GPU-t kapja. Ez gyorsabb, mint ha versengtek volna a VRAM-ért.
 
 ## Követelmények
 
@@ -117,7 +116,7 @@ leiratozo/
 ├── app.py                          # Flask szerver, pipeline vezérlés
 ├── convert.py                      # ffmpeg-alapú audio konvertálás
 ├── diarization.py                  # pyannote diarizáció
-├── fast_whisper_transcribe.py      # Gyors referencia-leirat (faster-whisper)
+├── fast_whisper_transcribe.py      # Standalone: gyors referencia-leirat (faster-whisper, nem fut automatikusan)
 ├── transcript_after_diarization.py # Végleges leirat (Trendency, turnönként)
 ├── llm_refine.py                   # Opcionális Ollama-alapú szövegfinomítás
 ├── step1_merge_diar.py             # Standalone: diarizációs szegmensek egyesítése
@@ -172,6 +171,15 @@ python step3_transcribe.py \
   --word-ts fw    # off | hf | fw | approx
 ```
 
+## Fast Whisper – standalone referencia-leirat
+
+A `fast_whisper_transcribe.py` nem fut automatikusan a pipeline-ban (GPU versengés és minőségi okokból), de manuálisan futtatható gyors referencia-leirat készítéséhez:
+
+```bash
+# audio.wav-ból készít fast_transcript.json-t a templates/transcripts/ mappába
+python fast_whisper_transcribe.py
+```
+
 ## Opcionális LLM finomítás (Ollama)
 
 Ha telepítve van [Ollama](https://ollama.com/):
@@ -188,12 +196,12 @@ Alapértelmezett modell: `llama3.1:70b` (felülírható: `OLLAMA_MODEL=llama3.1:
 
 Tipikus futásidők RTX 4070 Ti SUPER GPU-val (16 GB VRAM):
 
-| Hanganyag | Diarizáció | Fast Whisper | Trendency ASR | Összesen |
-|---|---|---|---|---|
-| 30 perc | ~3 perc | ~1 perc | ~5 perc | ~6 perc |
-| 60 perc | ~6 perc | ~2 perc | ~10 perc | ~12 perc |
+| Hanganyag | Diarizáció (GPU) | Trendency ASR (GPU) | Összesen |
+|---|---|---|---|
+| 30 perc | ~1 perc | ~4 perc | ~5 perc |
+| 60 perc | ~2 perc | ~8 perc | ~10 perc |
 
-A diarizáció és a Fast Whisper párhuzamosan fut → összidő ≈ `max(diar, fw) + trendency`.
+A diarizáció és az ASR sorosan fut, de mindkettő a teljes GPU-t kapja. A Fast Whisper nem fut automatikusan – a GPU versengés és a minőségi tradeoff miatt elhagyva a pipeline-ból.
 
 ## Hibaelhárítás
 

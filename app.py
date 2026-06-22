@@ -247,14 +247,7 @@ def upload():
         else:
             logprint("Nincs elegendő adat a becsült feldolgozási időhöz, folytatjuk...")
 
-        # 2. lépés: Fast Whisper (háttérben, GPU) + diarizáció (párhuzamosan)
-        logprint("Párhuzamos Fast Whisper leiratozás indítása...")
-        fast_proc = subprocess.Popen(
-            [sys.executable, str(BASE_DIR / "fast_whisper_transcribe.py")],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
-        _active["fast"] = fast_proc
-
+        # 2. lépés: diarizáció (GPU)
         logprint("Diarizáció kezdődik...")
         diar_proc = subprocess.Popen(
             [sys.executable, str(BASE_DIR / "diarization.py")],
@@ -262,27 +255,15 @@ def upload():
         )
         _active["diar"] = diar_proc
         diar_stdout, diar_stderr = diar_proc.communicate()
+        _active["diar"] = None
 
         if _stop_requested:
             remove_lock()
             return jsonify({"error": "Leállítva."})
 
         if diar_proc.returncode != 0 or "Diarizáció kész" not in diar_stdout:
-            try:
-                fast_proc.kill()
-            except Exception:
-                pass
             remove_lock()
             return jsonify({"error": "Diarizációs hiba!", "details": diar_stderr})
-
-        # 3. lépés: várakozás a Fast Whisper befejezésére
-        logprint("Várakozás a Fast Whisper befejezésére...")
-        try:
-            fast_proc.wait(timeout=1800)
-        except subprocess.TimeoutExpired:
-            fast_proc.kill()
-        _active["fast"] = None
-        logprint("Fast Whisper kész.")
 
         if _stop_requested:
             remove_lock()
