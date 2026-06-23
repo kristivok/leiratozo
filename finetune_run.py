@@ -76,7 +76,7 @@ def run_finetune(run_id: int):
         WhisperForConditionalGeneration, WhisperProcessor,
         get_linear_schedule_with_warmup,
     )
-    from peft import LoraConfig, get_peft_model, TaskType
+    from peft import LoraConfig, get_peft_model
     from torch.utils.data import Dataset, DataLoader
 
     log(f"=== Finomhangolás indul (run_id={run_id}) ===")
@@ -103,7 +103,6 @@ def run_finetune(run_id: int):
 
     log(f"LoRA alkalmazása (rank={LORA_RANK}, alpha={LORA_ALPHA})...")
     lora_cfg = LoraConfig(
-        task_type=TaskType.SEQ_2_SEQ_LM,
         r=LORA_RANK,
         lora_alpha=LORA_ALPHA,
         target_modules=["q_proj", "v_proj"],
