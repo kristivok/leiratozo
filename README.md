@@ -41,7 +41,8 @@ final_transcription_TIMESTAMP.json + final_text_TIMESTAMP.txt
 **Pipeline elvek:**
 - A diarizáció és az ASR **sorosan fut** – mindkettő a teljes GPU-t kapja.
 - Az `audio.wav` egyszer töltődik be memóriába; nincs per-turn lemez I/O.
-- Az ASR **manuális batch loop**-ban fut (`ASR_BATCH_SIZE` turn/batch), minden batch után `PROGRESS: X/Y` kerül stdout-ra.
+- Minden 25 mp-nél hosszabb turn automatikusan egyenlő részekre bomlik az ASR előtt (`split_long_turns`), majd a szöveg visszafűződik (`merge_sub_chunks`). Ez garantálja, hogy minden chunk Whisper 30 mp-es ablakán belül marad – belső sliding window nem kell, varrathiba nem léphet fel.
+- Az ASR **manuális batch loop**-ban fut (`ASR_BATCH_SIZE` chunk/batch), minden batch után `PROGRESS: X/Y` kerül stdout-ra.
 - Sem LLM-alapú finomítás, sem Fast Whisper nem fut automatikusan a pipeline-ban.
 
 ---
@@ -436,6 +437,9 @@ sqlite3 logs/transcriber.db "UPDATE queue SET status='pending' WHERE status='run
 **Diarizáció hibával áll le**
 - Ellenőrizd a `HUGGINGFACE_TOKEN` értékét
 - HuggingFace oldalon el kell fogadni a `pyannote/speaker-diarization-3.1` feltételeit
+
+**Hosszú turn-ök – hiányzó szöveg**
+- Whisper maximális ablaka 30 mp. Ha egy diarizációs turn ennél hosszabb volt és a pipeline belső sliding window-ja varrathiba miatt kihagyott tartalmat, a `split_long_turns()` (25 mp-es határ) megoldja: ez automatikusan fut minden leiratozásnál.
 
 **Finomhangolás: `No module named 'peft'`**
 ```bash
