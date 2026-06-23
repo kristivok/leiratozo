@@ -836,6 +836,11 @@ def finetune_status():
     end_h   = int(os.environ.get("FINETUNE_END_HOUR",   "6"))
     min_s   = int(os.environ.get("FINETUNE_MIN_SAMPLES", "5"))
 
+    active_dir    = os.environ.get("WHISPER_MODEL_DIR", "").strip()
+    ft_ready      = (FINETUNE_OUTPUT / "config.json").exists()
+    active_is_ft  = bool(active_dir and Path(active_dir).resolve() == FINETUNE_OUTPUT.resolve())
+    model_id      = os.environ.get("WHISPER_MODEL_ID", "Trendency/whisper-large-v3-hu")
+
     return jsonify({
         "running":          _finetune_running,
         "queue_busy":       _worker_running,
@@ -844,8 +849,10 @@ def finetune_status():
         "min_samples":      min_s,
         "window_start":     start_h,
         "window_end":       end_h,
-        "model_ready":      (FINETUNE_OUTPUT / "config.json").exists(),
+        "model_ready":      ft_ready,
         "model_dir":        str(FINETUNE_OUTPUT),
+        "active_model":     "finetune" if active_is_ft else "original",
+        "active_label":     str(FINETUNE_OUTPUT) if active_is_ft else model_id,
         "log_tail":         _finetune_log[-80:],
         "runs":             runs,
     })
@@ -880,7 +887,15 @@ def finetune_activate():
         return jsonify({"error": "Nincs kész finomhangolt modell!"})
     set_key(str(ENV_FILE), "WHISPER_MODEL_DIR", str(FINETUNE_OUTPUT))
     os.environ["WHISPER_MODEL_DIR"] = str(FINETUNE_OUTPUT)
-    return jsonify({"ok": True, "model_dir": str(FINETUNE_OUTPUT)})
+    return jsonify({"ok": True, "active": "finetune", "model_dir": str(FINETUNE_OUTPUT)})
+
+
+@app.route("/finetune/revert", methods=["POST"])
+def finetune_revert():
+    set_key(str(ENV_FILE), "WHISPER_MODEL_DIR", "")
+    os.environ["WHISPER_MODEL_DIR"] = ""
+    model_id = os.environ.get("WHISPER_MODEL_ID", "Trendency/whisper-large-v3-hu")
+    return jsonify({"ok": True, "active": "original", "model_id": model_id})
 
 
 if __name__ == "__main__":

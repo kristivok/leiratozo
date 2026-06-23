@@ -176,13 +176,23 @@
         </div>
     </div>
 
+    <!-- Aktív modell kijelző -->
+    <div id="activeModelBox" style="margin-bottom:14px; padding:10px 14px; border-radius:8px; font-size:13px; border:1px solid #ddd; background:#fafafa;">
+        <strong>Aktív modell:</strong>
+        <span id="activeModelLabel" style="font-family:monospace; margin-left:6px;">–</span>
+        <span id="activeModelBadge" style="margin-left:8px;"></span>
+    </div>
+
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
         <span id="windowBadge" class="window-badge out"><span class="dot grey"></span> –</span>
         <button class="btn btn-orange" id="triggerBtn" onclick="triggerFinetune()">
             ▶ Finomhangolás indítása most
         </button>
-        <button class="btn btn-blue"   id="activateBtn" onclick="activateModel()" style="display:none">
+        <button class="btn btn-blue" id="activateBtn" onclick="activateModel()" style="display:none">
             ✓ Finomhangolt modell aktiválása
+        </button>
+        <button class="btn btn-green" id="revertBtn" onclick="revertModel()" style="display:none">
+            ↩ Visszaállítás az eredeti modellre
         </button>
     </div>
     <div id="triggerMsg" style="margin-top:8px; font-size:13px;"></div>
@@ -310,8 +320,20 @@ async function pollStatus() {
     tb.disabled = d.running || d.queue_busy;
     tb.textContent = d.running ? '⟳ Fut…' : (d.queue_busy ? '⏸ Leiratozás folyik' : '▶ Finomhangolás indítása most');
 
-    // Aktiválás gomb
-    document.getElementById('activateBtn').style.display = d.model_ready ? 'inline-block' : 'none';
+    // Aktív modell kijelző
+    const isFinetune = d.active_model === 'finetune';
+    document.getElementById('activeModelLabel').textContent = d.active_label || '–';
+    document.getElementById('activeModelBox').style.background = isFinetune ? '#e8f5e9' : '#fafafa';
+    document.getElementById('activeModelBox').style.borderColor = isFinetune ? '#c8e6c9' : '#ddd';
+    document.getElementById('activeModelBadge').innerHTML = isFinetune
+        ? '<span style="background:#e8f5e9;color:#2e7d32;border:1px solid #c8e6c9;border-radius:10px;padding:2px 8px;font-size:11px;font-weight:600;">finomhangolt</span>'
+        : '<span style="background:#e3f2fd;color:#1565c0;border:1px solid #90caf9;border-radius:10px;padding:2px 8px;font-size:11px;font-weight:600;">eredeti</span>';
+
+    // Aktiválás / visszaállítás gombok
+    document.getElementById('activateBtn').style.display =
+        (d.model_ready && !isFinetune) ? 'inline-block' : 'none';
+    document.getElementById('revertBtn').style.display =
+        isFinetune ? 'inline-block' : 'none';
 
     // Élő log
     if (d.running || d.log_tail.length > 0) {
@@ -499,7 +521,20 @@ async function activateModel() {
     if (d.error) {
         alert(d.error);
     } else {
-        alert(`Aktiválva: ${d.model_dir}\n\nA változás a következő indítástól (sudo systemctl restart transcriber) érvényes.`);
+        document.getElementById('triggerMsg').innerHTML =
+            `<span style="color:#2e7d32">✓ Finomhangolt modell aktiválva. Újraindítás után érvényes: <code>sudo systemctl restart transcriber</code></span>`;
+    }
+    pollStatus();
+}
+
+async function revertModel() {
+    if (!confirm('Visszaállítod az eredeti modellt? A leiratozó ismét az alap Whisper modellt fogja használni.')) return;
+    const d = await fetch('/finetune/revert', { method: 'POST' }).then(r => r.json());
+    if (d.error) {
+        alert(d.error);
+    } else {
+        document.getElementById('triggerMsg').innerHTML =
+            `<span style="color:#1565c0">↩ Visszaállítva: <code>${esc(d.model_id)}</code>. Újraindítás után érvényes: <code>sudo systemctl restart transcriber</code></span>`;
     }
     pollStatus();
 }
