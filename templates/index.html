@@ -193,6 +193,15 @@
             font-size: 14px;
         }
         .lock-info { text-align:center; color:#888; margin-top:16px; font-style:italic; font-size:13px; }
+
+        /* Stats table */
+        .stats-table { width:100%; border-collapse:collapse; margin-top:10px; font-size:12px; }
+        .stats-table th { background:#f1f3f5; color:#555; padding:6px 8px; text-align:left;
+                          border-bottom:2px solid #dee2e6; }
+        .stats-table td { padding:5px 8px; border-bottom:1px solid #f0f0f0; color:#444; }
+        .stats-table tr:hover td { background:#fafafa; }
+        .stats-summary { background:#e8f5e9; border:1px solid #c8e6c9; border-radius:6px;
+                         padding:10px 14px; margin-bottom:10px; font-size:13px; line-height:1.8; }
     </style>
 </head>
 <body>
@@ -256,18 +265,31 @@
     <div class="lock-info">Jelenleg fut egy leiratozás ({{ ip }})<br>
         Kezdés: {{ start_time }}</div>
     {% endif %}
+
+    <!-- Statisztikák -->
+    <div style="margin-top:20px; border-top:1px solid #eee; padding-top:14px;">
+        <button class="btn btn-green" id="statsToggle"
+                style="background:#78909c; font-size:13px; padding:7px 16px;">
+            Statisztikák megjelenítése
+        </button>
+        <div id="statsPanel" style="display:none; margin-top:12px;">
+            <div id="statsContent" style="font-size:13px; color:#555;">Betöltés…</div>
+        </div>
+    </div>
 </div>
 
 <script>
 // ── State ─────────────────────────────────────────────────────────────────
-let pollTimer   = null;   // server poll (2 s)
-let uiTimer     = null;   // smooth UI update (200 ms)
-let clientStart = null;   // Date.now() when button pressed
-let lastStatus  = "";
-let serverStep  = 0;
-let serverPct   = 0;
-let estimatedTotal = 0;   // seconds, from server
-let step2At     = null;   // client elapsed when diarize started (seconds)
+let pollTimer      = null;
+let uiTimer        = null;
+let clientStart    = null;
+let lastStatus     = "";
+let serverStep     = 0;
+let serverPct      = 0;
+let estimatedTotal   = 0;
+let estimatedDiarize = 0;  // per-step becslés a szervertől
+let estimatedASR     = 0;
+let step2At        = null;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function fmt(s) {
@@ -325,10 +347,11 @@ function uiTick() {
         // Convert: ~5 s → ease toward 4.8%
         setBar(Math.min(4.8, 1 + el * 0.55));
     } else if (serverStep === 2) {
-        // Diarize: time-based interpolation 5% → 21%
+        // Diarize: idő-alapú interpoláció, estimatedDiarize alapján (ha ismert)
         if (step2At === null) step2At = el;
-        const diarEst  = estimatedTotal > 0 ? estimatedTotal * 0.18 : 100;
-        const diarEl   = el - step2At;
+        const diarEst = estimatedDiarize > 0 ? estimatedDiarize
+                      : estimatedTotal   > 0 ? estimatedTotal * 0.18 : 100;
+        const diarEl  = el - step2At;
         setBar(Math.min(21, 5 + (diarEl / diarEst) * 16));
     }
     // ASR (step 3): setBar is called from pollServer() on each PROGRESS line
@@ -342,9 +365,12 @@ async function pollServer() {
         data = await r.json();
     } catch { return; }
 
-    const { step, stepName, percent, remaining, detail, currentStep, estimatedTotal: est } = data;
+    const { step, stepName, percent, remaining, detail, currentStep,
+            estimatedTotal: est, estimatedDiarize: estD, estimatedASR: estA } = data;
 
-    if (est > 0 && estimatedTotal === 0) estimatedTotal = est;
+    if (est  > 0) estimatedTotal   = est;
+    if (estD > 0) estimatedDiarize = estD;
+    if (estA > 0) estimatedASR     = estA;
 
     // Detect step change
     if (step > 0 && step !== serverStep) {
@@ -418,8 +444,9 @@ document.getElementById('uploadBtn').addEventListener('click', async () => {
     if (!file) return;
 
     // Reset state
-    serverStep = 0; serverPct = 0; estimatedTotal = 0; step2At = null;
-    lastStatus = ''; clientStart = Date.now();
+    serverStep = 0; serverPct = 0;
+    estimatedTotal = 0; estimatedDiarize = 0; estimatedASR = 0;
+    step2At = null; lastStatus = ''; clientStart = Date.now();
 
     // Reset UI
     document.getElementById('uploadBtn').disabled   = true;
@@ -501,8 +528,85 @@ document.getElementById('uploadBtn').addEventListener('click', async () => {
         document.getElementById('elapsedDisplay').textContent =
             'Eltelt: ' + fmt(total) + ' (kész)';
         document.getElementById('remainingDisplay').textContent = '';
+        // Statisztika panel frissítése ha nyitva van
+        if (document.getElementById('statsPanel').style.display !== 'none') {
+            statsLoaded = false;
+            fetch('/stats').then(r => r.json()).then(renderStats).catch(() => {});
+        }
+        document.getElementById('uploadBtn').disabled = false;
     }
 });
+
+// ── Statisztikák ─────────────────────────────────────────────────────────
+let statsLoaded = false;
+document.getElementById('statsToggle').addEventListener('click', async () => {
+    const panel = document.getElementById('statsPanel');
+    const btn   = document.getElementById('statsToggle');
+    if (panel.style.display !== 'none') {
+        panel.style.display = 'none';
+        btn.textContent = 'Statisztikák megjelenítése';
+        return;
+    }
+    panel.style.display = 'block';
+    btn.textContent = 'Statisztikák elrejtése';
+    if (statsLoaded) return;
+    statsLoaded = true;
+
+    try {
+        const r    = await fetch('/stats');
+        const data = await r.json();
+        renderStats(data);
+    } catch (e) {
+        document.getElementById('statsContent').textContent = 'Betöltési hiba: ' + e.message;
+    }
+});
+
+function renderStats(data) {
+    const el = document.getElementById('statsContent');
+    if (!data.count) {
+        el.innerHTML = '<em>Még nincs tárolt leiratozás.</em>';
+        return;
+    }
+    const runs = data.runs;
+    // Összesítés
+    const validRuns = runs.filter(r => r.diarize_s > 0 && r.asr_s > 0 && r.duration_s > 0);
+    let summaryHtml = '';
+    if (validRuns.length >= 2) {
+        const diarFactors = validRuns.map(r => r.diarize_s / r.duration_s).sort((a,b)=>a-b);
+        const asrFactors  = validRuns.map(r => r.asr_s   / r.duration_s).sort((a,b)=>a-b);
+        const mid  = Math.floor(validRuns.length / 2);
+        const df   = diarFactors[mid];
+        const af   = asrFactors[mid];
+        const tot  = df + af;
+        summaryHtml = `<div class="stats-summary">
+            <strong>${data.count} leiratozás tárolva</strong><br>
+            Medián diarizáció: <strong>${(df*60).toFixed(1)}s / perc hanganyag</strong><br>
+            Medián ASR: <strong>${(af*60).toFixed(1)}s / perc hanganyag</strong><br>
+            Összesen: <strong>${(tot*60).toFixed(1)}s / perc hanganyag</strong>
+            &nbsp;·&nbsp; 60 perc hanghoz: ~<strong>${fmt(tot*3600)}</strong>
+        </div>`;
+    } else {
+        summaryHtml = `<div class="stats-summary"><strong>${data.count} leiratozás</strong> – becsléshez még ${2-validRuns.length} futás szükséges.</div>`;
+    }
+
+    const rows = runs.map(r => `<tr>
+        <td>${r.when ? r.when.substring(0,16).replace('T',' ') : '–'}</td>
+        <td title="${r.filename}">${r.filename.length > 30 ? r.filename.substring(0,28)+'…' : r.filename}</td>
+        <td>${fmt(r.duration_s)}</td>
+        <td>${r.diarize_s > 0 ? fmt(r.diarize_s) : '–'}</td>
+        <td>${r.asr_s > 0     ? fmt(r.asr_s)     : '–'}</td>
+        <td><strong>${fmt(r.total_s)}</strong></td>
+    </tr>`).join('');
+
+    el.innerHTML = summaryHtml + `
+    <table class="stats-table">
+        <thead><tr>
+            <th>Időpont</th><th>Fájl</th><th>Hossz</th>
+            <th>Diarizáció</th><th>ASR</th><th>Összesen</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+    </table>`;
+}
 
 // ── Stop ─────────────────────────────────────────────────────────────────
 document.getElementById('stopBtn').addEventListener('click', async () => {
