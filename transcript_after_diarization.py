@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import datetime
 import numpy as np
@@ -98,6 +99,66 @@ def merge_consecutive_same_speaker(segments, max_gap=1.0):
     return merged
 
 
+MAX_TURN_S = 25.0  # Whisper 30s ablak – 5s biztonsági margóval
+
+
+def split_long_turns(turns, max_dur=MAX_TURN_S):
+    """
+    Feldarabolja a MAX_TURN_S-nél hosszabb turn-öket egyenlő részekre.
+    Minden résznek megőrzi az eredeti turn indexét (_orig_idx) a visszafűzéshez.
+    """
+    out = []
+    for idx, t in enumerate(turns):
+        dur = t["end"] - t["start"]
+        if dur <= max_dur:
+            out.append({**t, "_orig_idx": idx, "_is_sub": False})
+            continue
+        n = math.ceil(dur / max_dur)
+        chunk_dur = dur / n
+        for k in range(n):
+            cs = round(t["start"] + k * chunk_dur, 3)
+            ce = round(min(t["start"] + (k + 1) * chunk_dur, t["end"]), 3)
+            out.append({
+                "speaker": t["speaker"],
+                "start": cs,
+                "end": ce,
+                "_orig_idx": idx,
+                "_is_sub": True,
+                "_orig_start": t["start"],
+                "_orig_end": t["end"],
+            })
+    return out
+
+
+def merge_sub_chunks(results):
+    """
+    Az ASR eredményekből visszafűzi a split_long_turns által feldarabolt részeket.
+    Az azonos _orig_idx-ű egymást követő bejegyzések szövegét összefűzi.
+    """
+    merged = []
+    i = 0
+    while i < len(results):
+        r = results[i]
+        if not r.get("_is_sub"):
+            merged.append({k: v for k, v in r.items() if not k.startswith("_")})
+            i += 1
+            continue
+        orig_idx = r["_orig_idx"]
+        texts = [r["text"]]
+        j = i + 1
+        while j < len(results) and results[j].get("_orig_idx") == orig_idx:
+            texts.append(results[j]["text"])
+            j += 1
+        merged.append({
+            "speaker": r["speaker"],
+            "start": r["_orig_start"],
+            "end": r["_orig_end"],
+            "text": " ".join(t for t in texts if t.strip()).strip(),
+        })
+        i = j
+    return merged
+
+
 # ── ASR pipeline ─────────────────────────────────────────────────────────────
 
 def _load_trendency_pipeline():
@@ -128,10 +189,9 @@ def _load_trendency_pipeline():
         feature_extractor=processor.feature_extractor,
         torch_dtype=dtype,
         device=device_index,
-        # chunk_length_s: Whisper max 30s – hosszú turn-öket automatikusan darabolja
-        chunk_length_s=30,
-        stride_length_s=1,
         batch_size=ASR_BATCH_SIZE,
+        # Nincs chunk_length_s: split_long_turns() garantálja, hogy minden
+        # chunk <= MAX_TURN_S (25s), így belső sliding window nem kell.
     )
     return asr, model, processor
 
@@ -172,12 +232,16 @@ def transcribe_turns(turns, audio_file):
 
     results = []
     for turn, out in zip(turns, outputs):
-        results.append({
+        r = {
             "speaker": turn["speaker"],
             "start": turn["start"],
             "end": turn["end"],
             "text": (out.get("text", "") or "").strip(),
-        })
+        }
+        for k, v in turn.items():
+            if k.startswith("_"):
+                r[k] = v
+        results.append(r)
     return results
 
 
@@ -220,8 +284,14 @@ if __name__ == "__main__":
         log("Nincs leiratozható turn. Leállok.")
         raise SystemExit(1)
 
+    split_turns = split_long_turns(merged_turns)
+    n_subs = sum(1 for t in split_turns if t.get("_is_sub"))
+    if n_subs:
+        log(f"   Hosszú turn-ök felosztva: {len(merged_turns)} turn → {len(split_turns)} chunk (max {MAX_TURN_S}s/chunk)")
+
     log("2) Batch ASR (Trendency modell, GPU)...")
-    transcription_results = transcribe_turns(merged_turns, AUDIO_PATH)
+    raw_results = transcribe_turns(split_turns, AUDIO_PATH)
+    transcription_results = merge_sub_chunks(raw_results)
 
     log("3) Mentés...")
     speaker_summary = summarize_speaker_times(merged_turns)
