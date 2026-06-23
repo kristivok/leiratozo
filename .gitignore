@@ -25,6 +25,11 @@ transcriber.lock
 queue/
 training_data/
 finetune_output/
+finetune_run.py
+finetune_chunks.py
+finetune_prepare.py
+finetune_transcript.py
+templates/finetune.html
 
 # Generált kimeneti fájlok
 diarization_result.json
