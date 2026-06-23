@@ -792,6 +792,11 @@ def finetune_data():
     } for r in rows]})
 
 
+@app.route("/finetune/audio/<path:filename>")
+def finetune_audio(filename):
+    return send_from_directory(str(TRAINING_DATA_DIR), filename)
+
+
 @app.route("/finetune/data/<int:item_id>/delete", methods=["POST"])
 def finetune_delete(item_id):
     conn = sqlite3.connect(DB_FILE)

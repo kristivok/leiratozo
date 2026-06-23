@@ -379,13 +379,15 @@ async function loadData() {
         const preview = it.transcript.length > 80
             ? esc(it.transcript.substring(0, 78)) + '…'
             : esc(it.transcript);
+        const audioLink = `<a href="/finetune/audio/${encodeURIComponent(it.audio_fn)}"
+            download="${esc(it.audio_fn)}" class="btn btn-blue btn-sm" title="Hanganyag letöltése">▼ Hang</a>`;
         return `<tr>
             <td>${it.id}</td>
             <td>${fmtDt(it.uploaded_at)}</td>
             <td>${it.duration_s}s</td>
             <td class="transcript-preview" title="${esc(it.transcript)}">${preview}</td>
             <td>${tag}</td>
-            <td>${del}</td>
+            <td style="white-space:nowrap">${audioLink} ${del}</td>
         </tr>`;
     }).join('');
     el.innerHTML = `<table class="data-table">
