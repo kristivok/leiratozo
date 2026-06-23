@@ -239,6 +239,19 @@
         .stats-table tr:hover td { background:#fafafa; }
         .stats-summary { background:#e8f5e9; border:1px solid #c8e6c9; border-radius:6px;
                          padding:10px 14px; margin-bottom:10px; font-size:13px; line-height:1.8; }
+        .dl-link {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px; font-weight: 600;
+            text-decoration: none;
+            background: #e3f2fd; color: #1565c0;
+            border: 1px solid #90caf9;
+            margin-right: 3px;
+        }
+        .dl-link:hover { background: #1e88e5; color: white; }
+        .dl-link.dl-json { background: #f3e5f5; color: #6a1b9a; border-color: #ce93d8; }
+        .dl-link.dl-json:hover { background: #8e24aa; color: white; }
     </style>
 </head>
 <body>
@@ -734,19 +747,33 @@ function renderStats(data) {
     } else {
         summaryHtml = `<div class="stats-summary"><strong>${data.count} leiratozás</strong> – becsléshez még ${2-validRuns.length} futás szükséges.</div>`;
     }
-    const rows = runs.map(r => `<tr>
-        <td>${r.when ? r.when.substring(0,16).replace('T',' ') : '–'}</td>
-        <td title="${escHtml(r.filename)}">${r.filename.length > 30 ? escHtml(r.filename.substring(0,28))+'…' : escHtml(r.filename)}</td>
-        <td>${fmt(r.duration_s)}</td>
-        <td>${r.diarize_s > 0 ? fmt(r.diarize_s) : '–'}</td>
-        <td>${r.asr_s     > 0 ? fmt(r.asr_s)     : '–'}</td>
-        <td><strong>${fmt(r.total_s)}</strong></td>
-    </tr>`).join('');
+    const rows = runs.map(r => {
+        let dlCell = '–';
+        if (r.text_fn) {
+            dlCell = `<a href="/download/${encodeURIComponent(r.text_fn)}" download="${escHtml(r.text_fn)}" class="dl-link">TXT</a>`;
+            if (r.result_fn) {
+                dlCell += ` <a href="/download/${encodeURIComponent(r.result_fn)}" download="${escHtml(r.result_fn)}" class="dl-link dl-json">JSON</a>`;
+            }
+        } else if (r.result_fn) {
+            dlCell = `<a href="/download/${encodeURIComponent(r.result_fn)}" download="${escHtml(r.result_fn)}" class="dl-link dl-json">JSON</a>`;
+        } else if (!r.result_fn && !r.text_fn) {
+            dlCell = '<span style="color:#bbb;font-size:11px">lejárt</span>';
+        }
+        return `<tr>
+            <td>${r.when ? r.when.substring(0,16).replace('T',' ') : '–'}</td>
+            <td title="${escHtml(r.filename)}">${r.filename.length > 30 ? escHtml(r.filename.substring(0,28))+'…' : escHtml(r.filename)}</td>
+            <td>${fmt(r.duration_s)}</td>
+            <td>${r.diarize_s > 0 ? fmt(r.diarize_s) : '–'}</td>
+            <td>${r.asr_s     > 0 ? fmt(r.asr_s)     : '–'}</td>
+            <td><strong>${fmt(r.total_s)}</strong></td>
+            <td>${dlCell}</td>
+        </tr>`;
+    }).join('');
     el.innerHTML = summaryHtml + `
     <table class="stats-table">
         <thead><tr>
             <th>Időpont</th><th>Fájl</th><th>Hossz</th>
-            <th>Diarizáció</th><th>ASR</th><th>Összesen</th>
+            <th>Diarizáció</th><th>ASR</th><th>Összesen</th><th>Letöltés</th>
         </tr></thead>
         <tbody>${rows}</tbody>
     </table>`;

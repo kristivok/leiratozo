@@ -91,7 +91,8 @@ def init_db():
         start_time TEXT, end_time TEXT, runtime REAL,
         diarize_time REAL DEFAULT 0, asr_time REAL DEFAULT 0
     )""")
-    for col in ("diarize_time REAL DEFAULT 0", "asr_time REAL DEFAULT 0"):
+    for col in ("diarize_time REAL DEFAULT 0", "asr_time REAL DEFAULT 0",
+                "result_fn TEXT DEFAULT ''"):
         try:
             c.execute(f"ALTER TABLE logs ADD COLUMN {col}")
         except sqlite3.OperationalError:
@@ -307,12 +308,12 @@ def _run_pipeline(job):
         conn = sqlite3.connect(DB_FILE)
         conn.execute("""INSERT INTO logs
             (ip, filename, filetype, duration, start_time, end_time,
-             runtime, diarize_time, asr_time)
-            VALUES (?,?,?,?,?,?,?,?,?)""",
+             runtime, diarize_time, asr_time, result_fn)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (ip, filename, file_ext, duration,
              datetime.fromtimestamp(start_time_sec),
              datetime.fromtimestamp(end_time_sec),
-             runtime, diarize_time, asr_time))
+             runtime, diarize_time, asr_time, result_fn))
         conn.commit()
         conn.close()
 
@@ -533,21 +534,29 @@ def status():
 def stats():
     conn = sqlite3.connect(DB_FILE)
     c    = conn.cursor()
-    c.execute("""SELECT id, filename, duration, diarize_time, asr_time, runtime, start_time
+    c.execute("""SELECT id, filename, duration, diarize_time, asr_time, runtime, start_time,
+                        COALESCE(result_fn, '') as result_fn
                  FROM logs WHERE duration > 5 ORDER BY id DESC LIMIT 20""")
     rows = c.fetchall()
     conn.close()
-    return jsonify({
-        "count": len(rows),
-        "runs": [{
+
+    runs = []
+    for r in rows:
+        result_fn  = r[7] or ""
+        text_fn    = result_fn.replace("final_transcription_", "final_text_").replace(".json", ".txt")
+        json_avail = bool(result_fn and (TRANSCRIPTS_FOLDER / result_fn).exists())
+        text_avail = bool(text_fn   and (TRANSCRIPTS_FOLDER / text_fn).exists())
+        runs.append({
             "id":         r[0], "filename": r[1],
             "duration_s": round(r[2] or 0, 1),
             "diarize_s":  round(r[3] or 0, 1),
             "asr_s":      round(r[4] or 0, 1),
             "total_s":    round(r[5] or 0, 1),
             "when":       r[6],
-        } for r in rows],
-    })
+            "result_fn":  result_fn  if json_avail else "",
+            "text_fn":    text_fn    if text_avail else "",
+        })
+    return jsonify({"count": len(rows), "runs": runs})
 
 
 @app.route("/stop", methods=["POST"])
