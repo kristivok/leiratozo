@@ -196,6 +196,16 @@
         </button>
     </div>
     <div id="triggerMsg" style="margin-top:8px; font-size:13px;"></div>
+    <div id="restartBox" style="display:none; margin-top:10px; padding:10px 14px;
+         background:#fff8e1; border:1px solid #ffd54f; border-radius:8px; font-size:13px; color:#f57f17;">
+        ⚠️ A változás újraindítás után lép életbe.
+        <button class="btn btn-orange btn-sm" style="margin-left:10px" onclick="doRestart()">
+            Újraindítás most
+        </button>
+    </div>
+    <div id="restartProgress" style="display:none; margin-top:10px; font-size:13px; color:#1565c0;">
+        ⟳ Újraindítás folyamatban… <span id="restartDots"></span>
+    </div>
 </div>
 
 <!-- ── Élő log ── -->
@@ -516,27 +526,58 @@ async function stopFinetune() {
 }
 
 async function activateModel() {
-    if (!confirm('Aktiválod a finomhangolt modellt? A következő leiratozástól ez lesz használatban.')) return;
+    if (!confirm('Aktiválod a finomhangolt modellt?')) return;
     const d = await fetch('/finetune/activate', { method: 'POST' }).then(r => r.json());
-    if (d.error) {
-        alert(d.error);
-    } else {
-        document.getElementById('triggerMsg').innerHTML =
-            `<span style="color:#2e7d32">✓ Finomhangolt modell aktiválva. Újraindítás után érvényes: <code>sudo systemctl restart transcriber</code></span>`;
-    }
+    if (d.error) { alert(d.error); return; }
+    document.getElementById('triggerMsg').innerHTML =
+        `<span style="color:#2e7d32">✓ Finomhangolt modell beállítva.</span>`;
+    document.getElementById('restartBox').style.display = 'block';
     pollStatus();
 }
 
 async function revertModel() {
-    if (!confirm('Visszaállítod az eredeti modellt? A leiratozó ismét az alap Whisper modellt fogja használni.')) return;
+    if (!confirm('Visszaállítod az eredeti modellt?')) return;
     const d = await fetch('/finetune/revert', { method: 'POST' }).then(r => r.json());
-    if (d.error) {
-        alert(d.error);
-    } else {
-        document.getElementById('triggerMsg').innerHTML =
-            `<span style="color:#1565c0">↩ Visszaállítva: <code>${esc(d.model_id)}</code>. Újraindítás után érvényes: <code>sudo systemctl restart transcriber</code></span>`;
-    }
+    if (d.error) { alert(d.error); return; }
+    document.getElementById('triggerMsg').innerHTML =
+        `<span style="color:#1565c0">↩ Eredeti modell beállítva: <code>${esc(d.model_id)}</code></span>`;
+    document.getElementById('restartBox').style.display = 'block';
     pollStatus();
+}
+
+async function doRestart() {
+    document.getElementById('restartBox').style.display     = 'none';
+    document.getElementById('restartProgress').style.display = 'block';
+    clearInterval(pollTimer);
+
+    // Animate dots
+    let dots = 0;
+    const dotsEl = document.getElementById('restartDots');
+    const dotsTimer = setInterval(() => {
+        dotsEl.textContent = '.'.repeat((dots++ % 4));
+    }, 400);
+
+    // Send restart request
+    try { await fetch('/restart', { method: 'POST' }); } catch {}
+
+    // Poll until server is back
+    await new Promise(r => setTimeout(r, 2000));
+    let attempts = 0;
+    while (attempts < 40) {
+        try {
+            const r = await fetch('/finetune/status');
+            if (r.ok) {
+                clearInterval(dotsTimer);
+                location.reload();
+                return;
+            }
+        } catch {}
+        await new Promise(r => setTimeout(r, 500));
+        attempts++;
+    }
+    clearInterval(dotsTimer);
+    document.getElementById('restartProgress').innerHTML =
+        '⚠️ Az újraindítás nem sikerült. Frissítsd az oldalt kézzel (F5).';
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────

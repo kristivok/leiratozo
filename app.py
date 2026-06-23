@@ -898,6 +898,17 @@ def finetune_revert():
     return jsonify({"ok": True, "active": "original", "model_id": model_id})
 
 
+@app.route("/restart", methods=["POST"])
+def restart_app():
+    if _finetune_running:
+        return jsonify({"error": "Finomhangolás fut – előbb állítsd le!"})
+    def _do():
+        time.sleep(0.8)
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    threading.Thread(target=_do, daemon=False).start()
+    return jsonify({"ok": True})
+
+
 if __name__ == "__main__":
     debug_mode = os.environ.get("FLASK_DEBUG", "0") == "1"
     app.run(host="0.0.0.0", port=PORT, debug=debug_mode, threaded=True)
