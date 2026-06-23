@@ -204,8 +204,15 @@
 
     <div class="form-row">
         <label>Hanganyag (mp3, wav, m4a, ogg…)</label>
-        <input type="file" id="audioFile" accept=".mp3,.wav,.m4a,.ogg,.flac,.mp4">
+        <input type="file" id="audioFile" accept=".mp3,.wav,.m4a,.ogg,.flac,.mp4"
+               onchange="previewAudio(this)">
         <div class="form-hint">Maximum 30 másodperc. Hosszabb fájlt a program visszautasítja.</div>
+    </div>
+    <div id="audioPreviewWrap" style="display:none; margin-bottom:14px;">
+        <label style="font-size:13px; font-weight:600; color:#555; display:block; margin-bottom:5px;">
+            Visszahallgatás – írd meg alá a hallott szöveget:
+        </label>
+        <audio id="audioPreview" controls style="width:100%; border-radius:6px;"></audio>
     </div>
     <div class="form-row">
         <label>Javított leirat</label>
@@ -407,6 +414,21 @@ async function deleteSample(id) {
     pollStatus();
 }
 
+// ── Audio előnézet ────────────────────────────────────────────────────────────
+function previewAudio(input) {
+    const wrap  = document.getElementById('audioPreviewWrap');
+    const player = document.getElementById('audioPreview');
+    if (input.files && input.files[0]) {
+        const url = URL.createObjectURL(input.files[0]);
+        player.src = url;
+        wrap.style.display = 'block';
+        player.focus();
+    } else {
+        wrap.style.display = 'none';
+        player.src = '';
+    }
+}
+
 // ── Feltöltés ─────────────────────────────────────────────────────────────────
 async function uploadSample() {
     const audioFile  = document.getElementById('audioFile').files[0];
@@ -430,8 +452,10 @@ async function uploadSample() {
             showUploadResult('error', d.error);
         } else {
             showUploadResult('ok', `Feltöltve! Hossz: ${d.duration_s}s`);
-            document.getElementById('audioFile').value     = '';
-            document.getElementById('transcriptText').value = '';
+            document.getElementById('audioFile').value      = '';
+            document.getElementById('transcriptText').value  = '';
+            document.getElementById('audioPreviewWrap').style.display = 'none';
+            document.getElementById('audioPreview').src = '';
             loadData();
             pollStatus();
         }
