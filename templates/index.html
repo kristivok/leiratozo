@@ -22,10 +22,37 @@
         }
         h1 { color: #222; text-align: center; margin: 0 0 24px; font-size: 1.6em; }
 
-        /* ── Progress card (always rendered, hidden when idle) ── */
-        #progressCard { display: none; }
+        /* ── Status banner (watching / waiting / running) ── */
+        #statusBanner {
+            text-align: center;
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 12px;
+            min-height: 18px;
+        }
+        #statusBanner .badge {
+            display: inline-block;
+            background: #fff3e0;
+            color: #e65100;
+            border: 1px solid #ffcc80;
+            border-radius: 20px;
+            padding: 3px 12px;
+            font-weight: 600;
+            font-size: 13px;
+            margin-right: 6px;
+        }
+        #statusBanner .watching {
+            display: inline-block;
+            background: #e3f2fd;
+            color: #1565c0;
+            border: 1px solid #90caf9;
+            border-radius: 20px;
+            padding: 3px 12px;
+            font-weight: 500;
+            font-size: 13px;
+        }
 
-        /* Step row */
+        /* ── Step row ── */
         .step-row {
             display: flex;
             align-items: center;
@@ -56,7 +83,7 @@
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
         .step-sep { color:#ddd; font-size:18px; }
 
-        /* Big progress bar */
+        /* ── Big progress bar ── */
         .pbar-wrap {
             position: relative;
             height: 28px;
@@ -80,7 +107,7 @@
             pointer-events: none;
         }
 
-        /* Time row */
+        /* ── Time row ── */
         .time-row {
             display: flex;
             justify-content: space-between;
@@ -89,10 +116,9 @@
             color: #666;
             margin-bottom: 6px;
         }
-        .time-row .elapsed { font-weight: 600; color: #444; }
+        .time-row .elapsed   { font-weight: 600; color: #444; }
         .time-row .remaining { color: #888; }
 
-        /* Detail + step text */
         #stepDetail {
             font-size: 13px; color: #555;
             text-align: center;
@@ -104,12 +130,37 @@
             text-align: center;
             min-height: 16px;
             font-style: italic;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
 
+        /* ── Queue panel (inside progress card) ── */
+        #queuePanel {
+            margin-top: 16px;
+            border-top: 1px solid #f0f0f0;
+            padding-top: 12px;
+        }
+        #queuePanel h4 {
+            font-size: 13px; font-weight: 600; color: #666;
+            margin: 0 0 8px;
+        }
+        .queue-item {
+            display: flex; align-items: center; gap: 8px;
+            padding: 5px 8px;
+            border-radius: 6px;
+            font-size: 12px;
+            margin-bottom: 3px;
+        }
+        .queue-item.running  { background: #e8f5e9; color: #2e7d32; }
+        .queue-item.pending  { background: #fafafa; color: #555; }
+        .queue-item.mine     { background: #fff3e0; color: #e65100; font-weight: 600; }
+        .queue-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+        .queue-dot.running { background: #43a047; animation: pulse 1.4s ease-in-out infinite; }
+        .queue-dot.pending { background: #bdbdbd; }
+        .queue-dot.mine    { background: #ff9800; }
+
         /* ── Upload card ── */
+        #progressCard { display: none; }
+
         #drop-area {
             border: 3px dashed #ccc;
             border-radius: 10px;
@@ -136,7 +187,6 @@
         .btn-blue   { background: #1e88e5; color: white; text-decoration: none; display: inline-block; }
         .btn-blue:hover { background: #1565c0; }
 
-        /* Result cards */
         .result-box {
             display: none;
             padding: 14px 18px;
@@ -147,16 +197,6 @@
         .result-box.error   { background:#fff3f3; color:#c62828; border:1px solid #ffcdd2; }
         .result-box.success { background:#f1f8e9; color:#2e7d32; border:1px solid #c5e1a5; }
 
-        .file-info-box {
-            display: none;
-            padding: 12px 16px;
-            background: #fff8e1;
-            border: 1px solid #ffe082;
-            border-radius: 8px;
-            font-size: 13px;
-            margin-top: 12px;
-            line-height: 1.7;
-        }
         #transcriptBox {
             display: none;
             margin-top: 14px;
@@ -179,8 +219,7 @@
             border-radius: 6px;
             max-height: 180px;
             overflow-y: auto;
-            font-size: 12px;
-            color: #666;
+            font-size: 12px; color: #666;
         }
         .process-log p { margin: 2px 0; }
 
@@ -192,9 +231,7 @@
             border: 1px solid #90caf9;
             font-size: 14px;
         }
-        .lock-info { text-align:center; color:#888; margin-top:16px; font-style:italic; font-size:13px; }
 
-        /* Stats table */
         .stats-table { width:100%; border-collapse:collapse; margin-top:10px; font-size:12px; }
         .stats-table th { background:#f1f3f5; color:#555; padding:6px 8px; text-align:left;
                           border-bottom:2px solid #dee2e6; }
@@ -206,8 +243,10 @@
 </head>
 <body>
 
-<!-- ── Progress card (top, visible during processing) ── -->
+<!-- ── Progress card (shown when any job is running, or my job is queued) ── -->
 <div class="card" id="progressCard">
+    <div id="statusBanner"></div>
+
     <div class="step-row">
         <div class="step-item" id="s1"><div class="step-icon">1</div><span>Konvertálás</span></div>
         <div class="step-sep">›</div>
@@ -222,12 +261,18 @@
     </div>
 
     <div class="time-row">
-        <span class="elapsed" id="elapsedDisplay">Eltelt: 0:00</span>
+        <span class="elapsed"   id="elapsedDisplay">Eltelt: 0:00</span>
         <span class="remaining" id="remainingDisplay">Becsült hátralévő: –</span>
     </div>
 
     <div id="stepDetail">–</div>
     <div id="currentStepText">Feldolgozás indul…</div>
+
+    <!-- Queue list (shown if there are pending jobs) -->
+    <div id="queuePanel" style="display:none">
+        <h4>Feldolgozási sor</h4>
+        <div id="queueItems"></div>
+    </div>
 </div>
 
 <!-- ── Main card ── -->
@@ -244,29 +289,22 @@
     </div>
 
     <div id="drop-area">
-        <p>Húzd ide a fájlt, vagy kattints a gombra!</p>
+        <p id="dropText">Húzd ide a fájlt, vagy kattints a gombra!</p>
         <input type="file" id="fileInput" class="file-input"
                accept=".mp3,.wav,.m4a,.ogg,.mp4,.mov,.flac">
         <button class="btn btn-green" id="selectBtn">Fájl kiválasztása</button>
         <button class="btn btn-green" id="uploadBtn" disabled>Feltöltés és leiratozás</button>
-        <button class="btn btn-red"   id="stopBtn" style="display:none">Leállítás</button>
-        <a id="downloadBtn" class="btn btn-blue" style="display:none">Leirat letöltése</a>
+        <button class="btn btn-red"   id="stopBtn"   style="display:none">Leállítás</button>
+        <a id="downloadBtn" class="btn btn-blue"     style="display:none">Leirat letöltése</a>
     </div>
 
-    <div class="result-box"    id="resultBox"></div>
-    <div class="file-info-box" id="fileInfoBox"></div>
+    <div class="result-box"  id="resultBox"></div>
     <div id="transcriptBox">
         <h3>Leirat szövege:</h3>
         <pre id="transcriptContent"></pre>
     </div>
     <div class="process-log" id="processLog"></div>
 
-    {% if locked %}
-    <div class="lock-info">Jelenleg fut egy leiratozás ({{ ip }})<br>
-        Kezdés: {{ start_time }}</div>
-    {% endif %}
-
-    <!-- Statisztikák -->
     <div style="margin-top:20px; border-top:1px solid #eee; padding-top:14px;">
         <button class="btn btn-green" id="statsToggle"
                 style="background:#78909c; font-size:13px; padding:7px 16px;">
@@ -279,32 +317,41 @@
 </div>
 
 <script>
-// ── State ─────────────────────────────────────────────────────────────────
-let pollTimer      = null;
-let uiTimer        = null;
-let clientStart    = null;
-let lastStatus     = "";
-let serverStep     = 0;
-let serverPct      = 0;
-let estimatedTotal   = 0;
-let estimatedDiarize = 0;  // per-step becslés a szervertől
-let estimatedASR     = 0;
-let step2At        = null;
+// ── Persistent state ───────────────────────────────────────────────────────
+let myJobId = parseInt(sessionStorage.getItem('leirat_queue_id')) || null;
 
-// ── Helpers ───────────────────────────────────────────────────────────────
+// ── Polling state ──────────────────────────────────────────────────────────
+let pollTimer    = null;
+let uiTimer      = null;
+let serverElapsed    = 0;
+let lastPollAt       = null;   // Date.now() when we last got serverElapsed
+let serverStep       = 0;
+let serverPct        = 0;
+let estimatedTotal   = 0;
+let estimatedDiarize = 0;
+let estimatedASR     = 0;
+let step2ElapsedAt   = null;   // serverElapsed value when step 2 first appeared
+let lastStatus       = '';
+
+// ── Helpers ────────────────────────────────────────────────────────────────
 function fmt(s) {
     s = Math.max(0, Math.round(s));
-    return Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+function getClientElapsed() {
+    if (!lastPollAt) return serverElapsed;
+    return serverElapsed + (Date.now() - lastPollAt) / 1000;
 }
 
 function setStep(n) {
-    [1,2,3].forEach(i => {
-        const el   = document.getElementById('s'+i);
+    [1, 2, 3].forEach(i => {
+        const el   = document.getElementById('s' + i);
         const icon = el.querySelector('.step-icon');
-        el.classList.remove('done','active');
-        if (i < n)  { el.classList.add('done');   icon.textContent = '✓'; }
-        if (i === n){ el.classList.add('active');  icon.textContent = i;  }
-        if (i > n)  {                              icon.textContent = i;  }
+        el.classList.remove('done', 'active');
+        if (i < n)  { el.classList.add('done');  icon.textContent = '✓'; }
+        if (i === n){ el.classList.add('active'); icon.textContent = i;  }
+        if (i > n)  {                             icon.textContent = i;  }
     });
 }
 
@@ -323,91 +370,220 @@ function addLog(msg) {
     log.scrollTop = log.scrollHeight;
 }
 
-// ── Continuous UI animation (200 ms) ─────────────────────────────────────
-// Animates the bar smoothly between server poll updates.
-// During convert: linearly eases toward 4.8%
-// During diarize: time-interpolates from 5% to 21%
-// During ASR:     server provides exact % (batch-based) – no interpolation needed
-function uiTick() {
-    if (!clientStart) return;
-    const el = (Date.now() - clientStart) / 1000;
+function resetProgress() {
+    serverElapsed = 0; lastPollAt = null;
+    serverStep = 0; serverPct = 0;
+    estimatedTotal = 0; estimatedDiarize = 0; estimatedASR = 0;
+    step2ElapsedAt = null; lastStatus = '';
+    setStep(1); setBar(0);
+    document.getElementById('elapsedDisplay').textContent   = 'Eltelt: 0:00';
+    document.getElementById('remainingDisplay').textContent = 'Becsült hátralévő: –';
+    document.getElementById('stepDetail').textContent       = '–';
+    document.getElementById('currentStepText').textContent  = 'Feldolgozás indul…';
+    document.getElementById('statusBanner').innerHTML       = '';
+}
 
-    // Always update elapsed display
+// ── Smooth UI animation (200 ms) ──────────────────────────────────────────
+function uiTick() {
+    const el = getClientElapsed();
+
     document.getElementById('elapsedDisplay').textContent = 'Eltelt: ' + fmt(el);
 
-    // Remaining
     if (estimatedTotal > 0) {
         const rem = estimatedTotal - el;
         document.getElementById('remainingDisplay').textContent =
             rem > 3 ? 'Becsült hátralévő: ~' + fmt(rem) : 'Hamarosan kész…';
     }
 
-    // Smooth bar interpolation for non-ASR steps
     if (serverStep === 1) {
-        // Convert: ~5 s → ease toward 4.8%
         setBar(Math.min(4.8, 1 + el * 0.55));
     } else if (serverStep === 2) {
-        // Diarize: idő-alapú interpoláció, estimatedDiarize alapján (ha ismert)
-        if (step2At === null) step2At = el;
+        if (step2ElapsedAt === null) step2ElapsedAt = el;
         const diarEst = estimatedDiarize > 0 ? estimatedDiarize
                       : estimatedTotal   > 0 ? estimatedTotal * 0.18 : 100;
-        const diarEl  = el - step2At;
-        setBar(Math.min(21, 5 + (diarEl / diarEst) * 16));
+        setBar(Math.min(21, 5 + ((el - step2ElapsedAt) / diarEst) * 16));
     }
-    // ASR (step 3): setBar is called from pollServer() on each PROGRESS line
 }
 
-// ── Server poll (2 s) ─────────────────────────────────────────────────────
-async function pollServer() {
+// ── Queue rendering ────────────────────────────────────────────────────────
+function renderQueue(running, queue) {
+    const panel = document.getElementById('queuePanel');
+    const items = document.getElementById('queueItems');
+    if (!running && queue.length === 0) {
+        panel.style.display = 'none';
+        return;
+    }
+    panel.style.display = 'block';
+    let html = '';
+    if (running) {
+        const isMine = myJobId && running.id === myJobId;
+        html += `<div class="queue-item ${isMine ? 'mine' : 'running'}">
+            <div class="queue-dot running"></div>
+            <span>Fut: ${escHtml(running.filename)}${isMine ? ' (a te fájlod)' : ''}</span>
+        </div>`;
+    }
+    queue.forEach((item, i) => {
+        const isMine = myJobId && item.id === myJobId;
+        html += `<div class="queue-item ${isMine ? 'mine' : 'pending'}">
+            <div class="queue-dot ${isMine ? 'mine' : 'pending'}"></div>
+            <span>${i + 1}. Várakozik${isMine ? ' – <strong>a te fájlod</strong>' : ''}</span>
+        </div>`;
+    });
+    items.innerHTML = html;
+}
+
+function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Main queue status poll ─────────────────────────────────────────────────
+async function pollQueueStatus() {
     let data;
     try {
-        const r = await fetch('/status');
-        data = await r.json();
+        const url = myJobId ? `/queue_status?id=${myJobId}` : '/queue_status';
+        data = await fetch(url).then(r => r.json());
     } catch { return; }
 
-    const { step, stepName, percent, remaining, detail, currentStep,
-            estimatedTotal: est, estimatedDiarize: estD, estimatedASR: estA } = data;
+    const { running, queue, my_job, progress } = data;
 
-    if (est  > 0) estimatedTotal   = est;
-    if (estD > 0) estimatedDiarize = estD;
-    if (estA > 0) estimatedASR     = estA;
-
-    // Detect step change
-    if (step > 0 && step !== serverStep) {
-        if (step === 2 && serverStep < 2) step2At = null; // will be set in uiTick
-        serverStep = step;
-        setStep(step);
-    }
-    serverPct = percent;
-
-    // For ASR: update bar directly from server percent (turn-accurate)
-    if (stepName === 'transcribe' && percent > serverPct) {
-        setBar(percent);
-        serverPct = percent;
-    } else if (stepName === 'transcribe') {
-        setBar(percent);
+    // Update server-side elapsed tracker
+    if (progress && progress.elapsed > 0) {
+        serverElapsed = progress.elapsed;
+        lastPollAt    = Date.now();
     }
 
-    // Detail line (turn progress)
-    if (detail) {
-        document.getElementById('stepDetail').textContent =
-            stepName === 'transcribe' ? 'ASR: ' + detail
-          : stepName === 'diarize'    ? 'Diarizáció folyamatban…'
-          : '';
+    // Update estimations from progress
+    if (progress) {
+        if (progress.estimatedTotal   > 0) estimatedTotal   = progress.estimatedTotal;
+        if (progress.estimatedDiarize > 0) estimatedDiarize = progress.estimatedDiarize;
+        if (progress.estimatedASR     > 0) estimatedASR     = progress.estimatedASR;
+
+        const step = progress.step;
+        if (step > 0 && step !== serverStep) {
+            if (step === 2) step2ElapsedAt = null;
+            serverStep = step;
+            setStep(step);
+        }
+
+        if (progress.stepName === 'transcribe') {
+            setBar(progress.percent);
+            serverPct = progress.percent;
+        }
+
+        if (progress.detail && progress.stepName === 'transcribe') {
+            document.getElementById('stepDetail').textContent = 'ASR: ' + progress.detail;
+        } else if (progress.stepName === 'diarize') {
+            document.getElementById('stepDetail').textContent = 'Diarizáció folyamatban…';
+        }
+
+        if (progress.currentStep && progress.currentStep !== lastStatus) {
+            addLog(progress.currentStep);
+            document.getElementById('currentStepText').textContent = progress.currentStep;
+            lastStatus = progress.currentStep;
+        }
     }
 
-    // Step description (log)
-    if (currentStep && currentStep !== lastStatus) {
-        addLog(currentStep);
-        document.getElementById('currentStepText').textContent = currentStep;
-        lastStatus = currentStep;
+    // ── State machine ─────────────────────────────────────────────────────
+    if (my_job) {
+        switch (my_job.status) {
+            case 'pending': {
+                const pos = my_job.position || '?';
+                document.getElementById('progressCard').style.display = 'block';
+                document.getElementById('statusBanner').innerHTML =
+                    `<span class="badge">Sorban állsz: ${pos}. helyen</span>` +
+                    (running ? `<span class="watching">Folyamatban: ${escHtml(running.filename)}</span>` : '');
+                if (!running && !progress.step) {
+                    // Nothing running yet but I'm queued (odd edge case)
+                    setStep(0);
+                }
+                renderQueue(running, queue.filter(q => q.id !== myJobId));
+                break;
+            }
+
+            case 'running': {
+                document.getElementById('progressCard').style.display = 'block';
+                document.getElementById('statusBanner').innerHTML = '';
+                renderQueue(running, queue);
+                break;
+            }
+
+            case 'done': {
+                stopTimers();
+                document.getElementById('progressCard').style.display = 'none';
+                setBar(100);
+                setStep(4);
+                document.getElementById('elapsedDisplay').textContent = 'Kész!';
+                document.getElementById('remainingDisplay').textContent = '';
+
+                const rb = document.getElementById('resultBox');
+                if (my_job.result_text) {
+                    rb.textContent   = 'Leiratozás kész!';
+                    rb.className     = 'result-box success';
+                    rb.style.display = 'block';
+
+                    const db = document.getElementById('downloadBtn');
+                    db.href          = '/download/' + my_job.result_fn;
+                    db.download      = my_job.result_fn;
+                    db.style.display = 'inline-block';
+
+                    document.getElementById('transcriptContent').textContent = my_job.result_text;
+                    document.getElementById('transcriptBox').style.display   = 'block';
+                    addLog('Kész – leirat letölthető.');
+                } else {
+                    rb.textContent   = 'Kész, de a leirat fájl már nem elérhető (30 perc lejárt). Tölts fel újra!';
+                    rb.className     = 'result-box error';
+                    rb.style.display = 'block';
+                }
+                // Clear session so user can upload again
+                sessionStorage.removeItem('leirat_queue_id');
+                myJobId = null;
+                document.getElementById('uploadBtn').disabled = false;
+                document.getElementById('stopBtn').style.display = 'none';
+
+                if (document.getElementById('statsPanel').style.display !== 'none') {
+                    statsLoaded = false;
+                    fetch('/stats').then(r => r.json()).then(renderStats).catch(() => {});
+                }
+                break;
+            }
+
+            case 'failed': {
+                stopTimers();
+                document.getElementById('progressCard').style.display = 'none';
+                const rb = document.getElementById('resultBox');
+                rb.textContent   = 'Leiratozási hiba: ' + (my_job.error_msg || 'ismeretlen hiba');
+                rb.className     = 'result-box error';
+                rb.style.display = 'block';
+                addLog('Hiba: ' + (my_job.error_msg || 'ismeretlen'));
+                sessionStorage.removeItem('leirat_queue_id');
+                myJobId = null;
+                document.getElementById('uploadBtn').disabled = false;
+                document.getElementById('stopBtn').style.display = 'none';
+                break;
+            }
+        }
+
+    } else if (running || queue.length > 0) {
+        // Visitor watching without own job
+        document.getElementById('progressCard').style.display = 'block';
+        document.getElementById('statusBanner').innerHTML =
+            running
+                ? `<span class="watching">Folyamatban: ${escHtml(running.filename)}</span>`
+                : '';
+        renderQueue(running, queue);
+
+    } else {
+        // Truly idle
+        document.getElementById('progressCard').style.display = 'none';
     }
 }
 
 function startTimers() {
-    uiTimer   = setInterval(uiTick,    200);
-    pollTimer = setInterval(pollServer, 2000);
-    pollServer(); // immediate first poll
+    if (uiTimer)   { clearInterval(uiTimer);   uiTimer   = null; }
+    if (pollTimer) { clearInterval(pollTimer);  pollTimer = null; }
+    uiTimer   = setInterval(uiTick,          200);
+    pollTimer = setInterval(pollQueueStatus, 2000);
+    pollQueueStatus(); // immediate first poll
 }
 
 function stopTimers() {
@@ -415,7 +591,7 @@ function stopTimers() {
     clearInterval(pollTimer); pollTimer = null;
 }
 
-// ── Drag & drop ──────────────────────────────────────────────────────────
+// ── Drag & drop ────────────────────────────────────────────────────────────
 const dropArea = document.getElementById('drop-area');
 document.getElementById('selectBtn').addEventListener('click', () =>
     document.getElementById('fileInput').click());
@@ -438,106 +614,84 @@ dropArea.addEventListener('drop', e => {
     }
 });
 
-// ── Upload ────────────────────────────────────────────────────────────────
+// ── Upload ─────────────────────────────────────────────────────────────────
 document.getElementById('uploadBtn').addEventListener('click', async () => {
     const file = document.getElementById('fileInput').files[0];
     if (!file) return;
 
-    // Reset state
-    serverStep = 0; serverPct = 0;
-    estimatedTotal = 0; estimatedDiarize = 0; estimatedASR = 0;
-    step2At = null; lastStatus = ''; clientStart = Date.now();
-
-    // Reset UI
-    document.getElementById('uploadBtn').disabled   = true;
+    document.getElementById('uploadBtn').disabled  = true;
     document.getElementById('stopBtn').style.display = 'inline-block';
-    document.getElementById('downloadBtn').style.display = 'none';
-    document.getElementById('resultBox').style.display  = 'none';
-    document.getElementById('fileInfoBox').style.display = 'none';
+    document.getElementById('resultBox').style.display    = 'none';
     document.getElementById('transcriptBox').style.display = 'none';
+    document.getElementById('downloadBtn').style.display   = 'none';
     document.getElementById('processLog').innerHTML = '';
     document.getElementById('processLog').style.display = 'none';
 
-    // Show progress card immediately
     document.getElementById('progressCard').style.display = 'block';
-    setStep(1);
-    setBar(0);
-    document.getElementById('elapsedDisplay').textContent   = 'Eltelt: 0:00';
-    document.getElementById('remainingDisplay').textContent = 'Becsült hátralévő: –';
-    document.getElementById('stepDetail').textContent       = '–';
-    document.getElementById('currentStepText').textContent  = 'Feltöltés indul…';
-
+    resetProgress();
+    document.getElementById('currentStepText').textContent = 'Feltöltés folyamatban…';
     startTimers();
 
     const formData = new FormData();
     formData.append('file', file);
 
     try {
-        const response = await fetch('/upload', { method:'POST', body: formData });
-        const result   = await response.json();
+        const resp = await fetch('/upload', { method: 'POST', body: formData });
+        const data = await resp.json();
 
-        stopTimers();
-        document.getElementById('stopBtn').style.display = 'none';
-
-        if (result.error) {
-            setBar(serverPct);
-            [1,2,3].forEach(i => document.getElementById('s'+i).classList.remove('active'));
+        if (data.error) {
+            stopTimers();
+            document.getElementById('stopBtn').style.display = 'none';
+            document.getElementById('uploadBtn').disabled = false;
+            document.getElementById('progressCard').style.display = 'none';
             const rb = document.getElementById('resultBox');
-            rb.textContent  = result.error + (result.details ? ' (' + result.details + ')' : '');
-            rb.className    = 'result-box error';
+            rb.textContent   = data.error;
+            rb.className     = 'result-box error';
             rb.style.display = 'block';
-            addLog('Hiba: ' + result.error);
-        } else {
-            setBar(100);
-            setStep(4); // all done
-            const rb = document.getElementById('resultBox');
-            rb.textContent   = result.success;
-            rb.className     = 'result-box success';
-            rb.style.display = 'block';
-            addLog('Kész!');
-
-            const db = document.getElementById('downloadBtn');
-            db.href = '/download/' + result.filename;
-            db.download = result.filename;
-            db.style.display = 'inline-block';
-
-            if (result.file_info) {
-                const i = result.file_info;
-                const fb = document.getElementById('fileInfoBox');
-                fb.innerHTML = `<strong>Fájl:</strong> ${i.name} &nbsp;·&nbsp;
-                    ${i.size_mb} MB &nbsp;·&nbsp; ${fmt(i.duration_s)} hossz`;
-                fb.style.display = 'block';
-            }
-            if (result.text) {
-                document.getElementById('transcriptContent').textContent = result.text;
-                document.getElementById('transcriptBox').style.display  = 'block';
-            }
+            return;
         }
+
+        myJobId = data.queue_id;
+        sessionStorage.setItem('leirat_queue_id', myJobId);
+        addLog(`Sorba állítva (id: ${myJobId})`);
+
+        if (data.position > 1) {
+            addLog(`Várakozási pozíció: ${data.position}. hely`);
+        }
+        // Polling is already running from startTimers(); it will update the UI
     } catch (err) {
         stopTimers();
         document.getElementById('stopBtn').style.display = 'none';
+        document.getElementById('uploadBtn').disabled = false;
+        document.getElementById('progressCard').style.display = 'none';
         const rb = document.getElementById('resultBox');
         rb.textContent   = 'Hálózati hiba: ' + err.message;
         rb.className     = 'result-box error';
         rb.style.display = 'block';
-        addLog('Hiba: ' + err.message);
     } finally {
         document.getElementById('fileInput').value = '';
-        const total = Math.round((Date.now() - clientStart) / 1000);
-        addLog('Teljes idő: ' + fmt(total));
-        document.getElementById('elapsedDisplay').textContent =
-            'Eltelt: ' + fmt(total) + ' (kész)';
-        document.getElementById('remainingDisplay').textContent = '';
-        // Statisztika panel frissítése ha nyitva van
-        if (document.getElementById('statsPanel').style.display !== 'none') {
-            statsLoaded = false;
-            fetch('/stats').then(r => r.json()).then(renderStats).catch(() => {});
-        }
-        document.getElementById('uploadBtn').disabled = false;
     }
 });
 
-// ── Statisztikák ─────────────────────────────────────────────────────────
+// ── Stop ───────────────────────────────────────────────────────────────────
+document.getElementById('stopBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('stopBtn');
+    btn.disabled = true;
+    addLog('Leállítás…');
+    try {
+        const r = await fetch('/stop', { method: 'POST' });
+        const d = await r.json();
+        addLog(d.status || 'Leállítva.');
+    } catch (e) {
+        addLog('Leállítási hiba: ' + e.message);
+    } finally {
+        btn.style.display = 'none';
+        btn.disabled = false;
+        // Keep polling so we see the failed state
+    }
+});
+
+// ── Statisztikák ──────────────────────────────────────────────────────────
 let statsLoaded = false;
 document.getElementById('statsToggle').addEventListener('click', async () => {
     const panel = document.getElementById('statsPanel');
@@ -551,11 +705,8 @@ document.getElementById('statsToggle').addEventListener('click', async () => {
     btn.textContent = 'Statisztikák elrejtése';
     if (statsLoaded) return;
     statsLoaded = true;
-
     try {
-        const r    = await fetch('/stats');
-        const data = await r.json();
-        renderStats(data);
+        renderStats(await fetch('/stats').then(r => r.json()));
     } catch (e) {
         document.getElementById('statsContent').textContent = 'Betöltési hiba: ' + e.message;
     }
@@ -564,20 +715,15 @@ document.getElementById('statsToggle').addEventListener('click', async () => {
 function renderStats(data) {
     const el = document.getElementById('statsContent');
     if (!data.count) {
-        el.innerHTML = '<em>Még nincs tárolt leiratozás.</em>';
-        return;
+        el.innerHTML = '<em>Még nincs tárolt leiratozás.</em>'; return;
     }
-    const runs = data.runs;
-    // Összesítés
+    const runs      = data.runs;
     const validRuns = runs.filter(r => r.diarize_s > 0 && r.asr_s > 0 && r.duration_s > 0);
     let summaryHtml = '';
     if (validRuns.length >= 2) {
-        const diarFactors = validRuns.map(r => r.diarize_s / r.duration_s).sort((a,b)=>a-b);
-        const asrFactors  = validRuns.map(r => r.asr_s   / r.duration_s).sort((a,b)=>a-b);
-        const mid  = Math.floor(validRuns.length / 2);
-        const df   = diarFactors[mid];
-        const af   = asrFactors[mid];
-        const tot  = df + af;
+        const df = validRuns.map(r => r.diarize_s / r.duration_s).sort((a,b)=>a-b)[Math.floor(validRuns.length/2)];
+        const af = validRuns.map(r => r.asr_s     / r.duration_s).sort((a,b)=>a-b)[Math.floor(validRuns.length/2)];
+        const tot = df + af;
         summaryHtml = `<div class="stats-summary">
             <strong>${data.count} leiratozás tárolva</strong><br>
             Medián diarizáció: <strong>${(df*60).toFixed(1)}s / perc hanganyag</strong><br>
@@ -588,16 +734,14 @@ function renderStats(data) {
     } else {
         summaryHtml = `<div class="stats-summary"><strong>${data.count} leiratozás</strong> – becsléshez még ${2-validRuns.length} futás szükséges.</div>`;
     }
-
     const rows = runs.map(r => `<tr>
         <td>${r.when ? r.when.substring(0,16).replace('T',' ') : '–'}</td>
-        <td title="${r.filename}">${r.filename.length > 30 ? r.filename.substring(0,28)+'…' : r.filename}</td>
+        <td title="${escHtml(r.filename)}">${r.filename.length > 30 ? escHtml(r.filename.substring(0,28))+'…' : escHtml(r.filename)}</td>
         <td>${fmt(r.duration_s)}</td>
         <td>${r.diarize_s > 0 ? fmt(r.diarize_s) : '–'}</td>
-        <td>${r.asr_s > 0     ? fmt(r.asr_s)     : '–'}</td>
+        <td>${r.asr_s     > 0 ? fmt(r.asr_s)     : '–'}</td>
         <td><strong>${fmt(r.total_s)}</strong></td>
     </tr>`).join('');
-
     el.innerHTML = summaryHtml + `
     <table class="stats-table">
         <thead><tr>
@@ -608,22 +752,10 @@ function renderStats(data) {
     </table>`;
 }
 
-// ── Stop ─────────────────────────────────────────────────────────────────
-document.getElementById('stopBtn').addEventListener('click', async () => {
-    const btn = document.getElementById('stopBtn');
-    btn.disabled = true;
-    addLog('Leállítás…');
-    try {
-        const r = await fetch('/stop', { method:'POST' });
-        const d = await r.json();
-        addLog(d.status || 'Leállítva.');
-    } catch (e) {
-        addLog('Leállítási hiba: ' + e.message);
-    } finally {
-        btn.style.display = 'none';
-        stopTimers();
-    }
-});
+// ── On page load: resume polling if I have a queued job ───────────────────
+if (myJobId) {
+    startTimers();
+}
 </script>
 </body>
 </html>
