@@ -224,14 +224,6 @@ sudo systemctl enable --now transcriber
 journalctl -u transcriber -f
 ```
 
-### Docker (GPU)
-
-```bash
-docker build -t leiratozo .
-docker run --gpus all -p 58515:58515 \
-  -e HUGGINGFACE_TOKEN=hf_... \
-  leiratozo
-```
 
 ## API végpontok
 
@@ -324,7 +316,6 @@ leiratozo/
 ├── step3_transcribe.py             # Standalone: ASR pipeline
 ├── check_gpu.py                    # GPU elérhetőség ellenőrzése
 ├── transcriber.service             # systemd service unit
-├── Dockerfile                      # CUDA-kompatibilis konténer
 ├── requirements.txt                # Python függőségek
 ├── static/                         # Ikonok, statikus fájlok
 └── templates/
