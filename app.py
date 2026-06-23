@@ -645,10 +645,10 @@ def _ft_finish_run(run_id, ok, last_loss=None, error_msg=None):
     conn.close()
 
 
-def _ft_count_unused():
+def _ft_count_all():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM training_data WHERE used_in_run=0")
+    c.execute("SELECT COUNT(*) FROM training_data")
     n = c.fetchone()[0]
     conn.close()
     return n
@@ -668,11 +668,11 @@ def _start_finetune():
     with _finetune_lock:
         if _finetune_running:
             return None
-        n = _ft_count_unused()
+        n = _ft_count_all()
         if n == 0:
             return None
         run_id = _ft_new_run(n)
-        _finetune_log = [f"Finomhangolás indul (run #{run_id}, {n} minta)..."]
+        _finetune_log = [f"Finomhangolás indul (run #{run_id}, {n} minta összesen)..."]
         _finetune_running = True
 
     def _worker():
@@ -708,16 +708,17 @@ def _start_finetune():
 
 
 def _finetune_scheduler():
-    """Munkaidőn kívül automatikusan indítja a finomhangolást."""
-    time.sleep(120)  # Indulás után 2 perc várakozás
+    """Automatikus indítás – csak ha FINETUNE_AUTO=1 van a .env-ben (alapból ki van kapcsolva)."""
+    time.sleep(120)
     while True:
-        time.sleep(600)  # 10 percenként ellenőriz
+        time.sleep(600)
+        if os.environ.get("FINETUNE_AUTO", "0") != "1":
+            continue
         if not _is_finetune_window():
             continue
         if _finetune_running or _worker_running:
             continue
-        min_s = int(os.environ.get("FINETUNE_MIN_SAMPLES", "5"))
-        if _ft_count_unused() >= min_s:
+        if _ft_count_all() > 0:
             _start_finetune()
 
 
@@ -801,19 +802,16 @@ def finetune_audio(filename):
 def finetune_delete(item_id):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT audio_fn, used_in_run FROM training_data WHERE id=?", (item_id,))
+    c.execute("SELECT audio_fn FROM training_data WHERE id=?", (item_id,))
     row = c.fetchone()
     if not row:
         conn.close()
         return jsonify({"error": "Nem található"})
-    if row[1]:
-        conn.close()
-        return jsonify({"error": "Már felhasznált tanítóadat nem törölhető"})
     c.execute("DELETE FROM training_data WHERE id=?", (item_id,))
     conn.commit()
     conn.close()
     try:
-        (TRAINING_DATA_DIR / row[0]).unlink(missing_ok=True)
+        (TRAINING_DATA_DIR / row[0]).unlink(missing_ok=True)  # row[0] = audio_fn
     except Exception:
         pass
     return jsonify({"ok": True})
@@ -828,13 +826,8 @@ def finetune_status():
     runs = [{"id": r[0], "started_at": r[1], "finished_at": r[2],
              "status": r[3], "samples_used": r[4],
              "last_loss": r[5], "error_msg": r[6]} for r in c.fetchall()]
-    unused = _ft_count_unused()
+    total = _ft_count_all()
     conn.close()
-
-    h       = datetime.now().hour
-    start_h = int(os.environ.get("FINETUNE_START_HOUR", "22"))
-    end_h   = int(os.environ.get("FINETUNE_END_HOUR",   "6"))
-    min_s   = int(os.environ.get("FINETUNE_MIN_SAMPLES", "5"))
 
     active_dir    = os.environ.get("WHISPER_MODEL_DIR", "").strip()
     ft_ready      = (FINETUNE_OUTPUT / "config.json").exists()
@@ -844,11 +837,7 @@ def finetune_status():
     return jsonify({
         "running":          _finetune_running,
         "queue_busy":       _worker_running,
-        "in_window":        _is_finetune_window(),
-        "unused_samples":   unused,
-        "min_samples":      min_s,
-        "window_start":     start_h,
-        "window_end":       end_h,
+        "total_samples":    total,
         "model_ready":      ft_ready,
         "model_dir":        str(FINETUNE_OUTPUT),
         "active_model":     "finetune" if active_is_ft else "original",
@@ -864,8 +853,8 @@ def finetune_trigger():
         return jsonify({"error": "Már fut egy finomhangolás!"})
     if _worker_running:
         return jsonify({"error": "Leiratozás folyamatban – nem lehet egyszerre futtatni!"})
-    if _ft_count_unused() == 0:
-        return jsonify({"error": "Nincs felhasználatlan tanítóadat!"})
+    if _ft_count_all() == 0:
+        return jsonify({"error": "Nincs feltöltött tanítóadat!"})
     run_id = _start_finetune()
     return jsonify({"ok": True, "run_id": run_id})
 
