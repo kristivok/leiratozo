@@ -581,6 +581,303 @@ def download(filename):
     return send_from_directory(str(TRANSCRIPTS_FOLDER), filename)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# FINOMHANGOLÁS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+TRAINING_DATA_DIR = BASE_DIR / "training_data"
+FINETUNE_OUTPUT   = BASE_DIR / "finetune_output"
+
+_finetune_running  = False
+_finetune_lock     = threading.Lock()
+_finetune_proc     = None
+_finetune_log      = []   # live log lines from the subprocess
+
+
+def _ft_init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""CREATE TABLE IF NOT EXISTS training_data (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        audio_fn    TEXT,
+        transcript  TEXT,
+        uploaded_at TEXT,
+        duration_s  REAL,
+        used_in_run INTEGER DEFAULT 0
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS finetune_runs (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at   TEXT,
+        finished_at  TEXT,
+        status       TEXT DEFAULT 'running',
+        samples_used INTEGER DEFAULT 0,
+        last_loss    REAL,
+        output_dir   TEXT,
+        error_msg    TEXT
+    )""")
+    conn.commit()
+    conn.close()
+
+
+_ft_init_db()
+
+
+def _ft_new_run(n_samples):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT INTO finetune_runs (started_at, status, samples_used, output_dir) VALUES (?,?,?,?)",
+              (datetime.now().isoformat(), "running", n_samples, str(FINETUNE_OUTPUT)))
+    run_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return run_id
+
+
+def _ft_finish_run(run_id, ok, last_loss=None, error_msg=None):
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("""UPDATE finetune_runs
+                    SET status=?, finished_at=?, last_loss=?, error_msg=?
+                    WHERE id=?""",
+                 ("done" if ok else "failed",
+                  datetime.now().isoformat(),
+                  last_loss, error_msg, run_id))
+    conn.commit()
+    conn.close()
+
+
+def _ft_count_unused():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM training_data WHERE used_in_run=0")
+    n = c.fetchone()[0]
+    conn.close()
+    return n
+
+
+def _is_finetune_window():
+    h       = datetime.now().hour
+    start_h = int(os.environ.get("FINETUNE_START_HOUR", "22"))
+    end_h   = int(os.environ.get("FINETUNE_END_HOUR",   "6"))
+    if start_h > end_h:
+        return h >= start_h or h < end_h
+    return start_h <= h < end_h
+
+
+def _start_finetune():
+    global _finetune_running, _finetune_proc, _finetune_log
+    with _finetune_lock:
+        if _finetune_running:
+            return None
+        n = _ft_count_unused()
+        if n == 0:
+            return None
+        run_id = _ft_new_run(n)
+        _finetune_log = [f"Finomhangolás indul (run #{run_id}, {n} minta)..."]
+        _finetune_running = True
+
+    def _worker():
+        global _finetune_running, _finetune_proc, _finetune_log
+        last_loss = None
+        proc = subprocess.Popen(
+            [sys.executable, str(BASE_DIR / "finetune_run.py"), "--run-id", str(run_id)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+        )
+        _finetune_proc = proc
+        for raw in proc.stdout:
+            line = raw.rstrip()
+            if not line:
+                continue
+            _finetune_log.append(line)
+            if len(_finetune_log) > 500:
+                _finetune_log = _finetune_log[-500:]
+            m = re.search(r"loss=([\d.]+)", line)
+            if m:
+                last_loss = float(m.group(1))
+        proc.stdout.close()
+        rc = proc.wait()
+        _finetune_proc = None
+        ok = rc == 0
+        _ft_finish_run(run_id, ok, last_loss=last_loss,
+                       error_msg=None if ok else f"Kilépési kód: {rc}")
+        _finetune_log.append("=== Kész ===" if ok else f"=== HIBA (kód {rc}) ===")
+        with _finetune_lock:
+            _finetune_running = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return run_id
+
+
+def _finetune_scheduler():
+    """Munkaidőn kívül automatikusan indítja a finomhangolást."""
+    time.sleep(120)  # Indulás után 2 perc várakozás
+    while True:
+        time.sleep(600)  # 10 percenként ellenőriz
+        if not _is_finetune_window():
+            continue
+        if _finetune_running or _worker_running:
+            continue
+        min_s = int(os.environ.get("FINETUNE_MIN_SAMPLES", "5"))
+        if _ft_count_unused() >= min_s:
+            _start_finetune()
+
+
+threading.Thread(target=_finetune_scheduler, daemon=True).start()
+
+
+# ── Finomhangolás – lapok és API ──────────────────────────────────────────────
+
+@app.route("/finetune")
+def finetune_page():
+    return render_template("finetune.html")
+
+
+@app.route("/finetune/upload", methods=["POST"])
+def finetune_upload():
+    audio = request.files.get("audio")
+    transcript = request.form.get("transcript", "").strip()
+    if not audio or not audio.filename:
+        return jsonify({"error": "Nincs hangfájl!"})
+    if not transcript:
+        return jsonify({"error": "A leirat szövege kötelező!"})
+
+    os.makedirs(TRAINING_DATA_DIR, exist_ok=True)
+    prefix    = datetime.now().strftime("%Y%m%d%H%M%S%f")[:18]
+    audio_fn  = f"{prefix}_{audio.filename}"
+    save_path = TRAINING_DATA_DIR / audio_fn
+    audio.save(save_path)
+
+    # Konvertálás és időtartam ellenőrzése
+    try:
+        seg = AudioSegment.from_file(str(save_path)).set_frame_rate(16000).set_channels(1)
+        duration_s = len(seg) / 1000.0
+        if duration_s > 35:
+            save_path.unlink(missing_ok=True)
+            return jsonify({"error": f"A hanganyag túl hosszú ({duration_s:.1f} s). Maximum 30 mp engedélyezett."})
+        # WAV-ra konvertálás
+        wav_fn   = audio_fn.rsplit(".", 1)[0] + ".wav"
+        wav_path = TRAINING_DATA_DIR / wav_fn
+        seg.export(str(wav_path), format="wav")
+        if audio_fn != wav_fn:
+            save_path.unlink(missing_ok=True)
+        audio_fn = wav_fn
+    except Exception as e:
+        try:
+            save_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return jsonify({"error": f"Hangfájl feldolgozási hiba: {e}"})
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT INTO training_data (audio_fn, transcript, uploaded_at, duration_s) VALUES (?,?,?,?)",
+              (audio_fn, transcript, datetime.now().isoformat(), duration_s))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "duration_s": round(duration_s, 1)})
+
+
+@app.route("/finetune/data")
+def finetune_data():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""SELECT id, audio_fn, transcript, uploaded_at, duration_s, used_in_run
+                 FROM training_data ORDER BY id DESC""")
+    rows = c.fetchall()
+    conn.close()
+    return jsonify({"items": [{
+        "id": r[0], "audio_fn": r[1],
+        "transcript": r[2], "uploaded_at": r[3],
+        "duration_s": round(r[4] or 0, 1),
+        "used": bool(r[5]),
+    } for r in rows]})
+
+
+@app.route("/finetune/data/<int:item_id>/delete", methods=["POST"])
+def finetune_delete(item_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT audio_fn, used_in_run FROM training_data WHERE id=?", (item_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Nem található"})
+    if row[1]:
+        conn.close()
+        return jsonify({"error": "Már felhasznált tanítóadat nem törölhető"})
+    c.execute("DELETE FROM training_data WHERE id=?", (item_id,))
+    conn.commit()
+    conn.close()
+    try:
+        (TRAINING_DATA_DIR / row[0]).unlink(missing_ok=True)
+    except Exception:
+        pass
+    return jsonify({"ok": True})
+
+
+@app.route("/finetune/status")
+def finetune_status():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""SELECT id, started_at, finished_at, status, samples_used, last_loss, error_msg
+                 FROM finetune_runs ORDER BY id DESC LIMIT 10""")
+    runs = [{"id": r[0], "started_at": r[1], "finished_at": r[2],
+             "status": r[3], "samples_used": r[4],
+             "last_loss": r[5], "error_msg": r[6]} for r in c.fetchall()]
+    unused = _ft_count_unused()
+    conn.close()
+
+    h       = datetime.now().hour
+    start_h = int(os.environ.get("FINETUNE_START_HOUR", "22"))
+    end_h   = int(os.environ.get("FINETUNE_END_HOUR",   "6"))
+    min_s   = int(os.environ.get("FINETUNE_MIN_SAMPLES", "5"))
+
+    return jsonify({
+        "running":          _finetune_running,
+        "queue_busy":       _worker_running,
+        "in_window":        _is_finetune_window(),
+        "unused_samples":   unused,
+        "min_samples":      min_s,
+        "window_start":     start_h,
+        "window_end":       end_h,
+        "model_ready":      (FINETUNE_OUTPUT / "config.json").exists(),
+        "model_dir":        str(FINETUNE_OUTPUT),
+        "log_tail":         _finetune_log[-80:],
+        "runs":             runs,
+    })
+
+
+@app.route("/finetune/trigger", methods=["POST"])
+def finetune_trigger():
+    if _finetune_running:
+        return jsonify({"error": "Már fut egy finomhangolás!"})
+    if _worker_running:
+        return jsonify({"error": "Leiratozás folyamatban – nem lehet egyszerre futtatni!"})
+    if _ft_count_unused() == 0:
+        return jsonify({"error": "Nincs felhasználatlan tanítóadat!"})
+    run_id = _start_finetune()
+    return jsonify({"ok": True, "run_id": run_id})
+
+
+@app.route("/finetune/stop", methods=["POST"])
+def finetune_stop():
+    global _finetune_running
+    p = _finetune_proc
+    if p and p.poll() is None:
+        p.kill()
+        _finetune_log.append("Manuálisan leállítva.")
+        return jsonify({"ok": True})
+    return jsonify({"error": "Nincs futó finomhangolás."})
+
+
+@app.route("/finetune/activate", methods=["POST"])
+def finetune_activate():
+    if not (FINETUNE_OUTPUT / "config.json").exists():
+        return jsonify({"error": "Nincs kész finomhangolt modell!"})
+    set_key(str(ENV_FILE), "WHISPER_MODEL_DIR", str(FINETUNE_OUTPUT))
+    os.environ["WHISPER_MODEL_DIR"] = str(FINETUNE_OUTPUT)
+    return jsonify({"ok": True, "model_dir": str(FINETUNE_OUTPUT)})
+
+
 if __name__ == "__main__":
     debug_mode = os.environ.get("FLASK_DEBUG", "0") == "1"
     app.run(host="0.0.0.0", port=PORT, debug=debug_mode, threaded=True)

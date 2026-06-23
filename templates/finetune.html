@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Finomhangolás – Leiratozó</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 860px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f0f2f5;
+        }
+        nav {
+            display: flex; align-items: center; gap: 16px;
+            margin-bottom: 18px;
+        }
+        nav a { color: #1565c0; text-decoration: none; font-size: 14px; }
+        nav a:hover { text-decoration: underline; }
+        nav h1 { margin: 0; font-size: 1.4em; color: #222; flex: 1; text-align: center; }
+
+        .card {
+            background: white;
+            padding: 24px 28px;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.09);
+            margin-bottom: 16px;
+        }
+        .card h2 { margin: 0 0 16px; font-size: 1.1em; color: #333; border-bottom: 1px solid #eee; padding-bottom: 8px; }
+
+        .btn {
+            padding: 9px 20px; border: none; border-radius: 6px;
+            cursor: pointer; font-size: 14px; margin: 4px;
+            transition: background .2s; font-weight: 500;
+        }
+        .btn-green  { background: #4CAF50; color: white; }
+        .btn-green:hover  { background: #43a047; }
+        .btn-green:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-red    { background: #e53935; color: white; }
+        .btn-red:hover { background: #c62828; }
+        .btn-blue   { background: #1e88e5; color: white; }
+        .btn-blue:hover { background: #1565c0; }
+        .btn-orange { background: #fb8c00; color: white; }
+        .btn-orange:hover { background: #e65100; }
+        .btn-sm { padding: 4px 10px; font-size: 12px; margin: 0; }
+
+        .form-row { margin-bottom: 14px; }
+        .form-row label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 5px; }
+        .form-row input[type=file], .form-row textarea, .form-row input[type=number] {
+            width: 100%; padding: 8px 10px; border: 1px solid #ddd;
+            border-radius: 6px; font-size: 13px; font-family: inherit;
+        }
+        .form-row textarea { min-height: 90px; resize: vertical; }
+        .form-hint { font-size: 11px; color: #999; margin-top: 3px; }
+
+        .alert { padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 12px; }
+        .alert-warn  { background: #fff3e0; color: #e65100; border: 1px solid #ffcc80; }
+        .alert-ok    { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+        .alert-error { background: #fff3f3; color: #c62828; border: 1px solid #ffcdd2; }
+        .alert-info  { background: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; }
+
+        /* Status panel */
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+        .status-box {
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 10px 14px;
+            text-align: center;
+        }
+        .status-box .val { font-size: 1.5em; font-weight: bold; color: #333; }
+        .status-box .lbl { font-size: 11px; color: #888; margin-top: 2px; }
+        .status-box.active { border-color: #1e88e5; background: #e3f2fd; }
+        .status-box.active .val { color: #1565c0; }
+
+        /* Window badge */
+        .window-badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+        }
+        .window-badge.in   { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+        .window-badge.out  { background: #fafafa;  color: #999;    border: 1px solid #e0e0e0; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; }
+        .dot.green { background: #43a047; animation: pulse 1.4s ease-in-out infinite; }
+        .dot.grey  { background: #bdbdbd; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+        /* Log box */
+        .log-box {
+            background: #1e1e1e; color: #d4d4d4;
+            font-family: monospace; font-size: 12px;
+            padding: 10px 12px; border-radius: 6px;
+            max-height: 220px; overflow-y: auto;
+            line-height: 1.5;
+        }
+        .log-box .log-step  { color: #4ec9b0; }
+        .log-box .log-epoch { color: #dcdcaa; font-weight: bold; }
+        .log-box .log-err   { color: #f44747; }
+        .log-box .log-ok    { color: #4caf50; font-weight: bold; }
+
+        /* Data table */
+        .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .data-table th { background: #f1f3f5; color: #555; padding: 7px 10px;
+                         text-align: left; border-bottom: 2px solid #dee2e6; }
+        .data-table td { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; color: #444; vertical-align: top; }
+        .data-table tr:hover td { background: #fafafa; }
+        .tag-used   { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px;
+                      background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+        .tag-unused { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px;
+                      background: #fff3e0; color: #e65100; border: 1px solid #ffcc80; }
+        .transcript-preview { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        /* Runs table */
+        .runs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .runs-table th { background: #f1f3f5; color: #555; padding: 6px 8px;
+                         text-align: left; border-bottom: 2px solid #dee2e6; }
+        .runs-table td { padding: 5px 8px; border-bottom: 1px solid #f0f0f0; }
+        .status-pill {
+            display: inline-block; padding: 2px 8px; border-radius: 10px;
+            font-size: 11px; font-weight: 600;
+        }
+        .s-running { background: #e3f2fd; color: #1565c0; }
+        .s-done    { background: #e8f5e9; color: #2e7d32; }
+        .s-failed  { background: #fff3f3; color: #c62828; }
+
+        #uploadResult { display: none; }
+
+        .finetune-running-warn {
+            background: #fff8e1; border: 1px solid #ffd54f;
+            border-radius: 8px; padding: 10px 14px;
+            font-size: 13px; color: #f57f17;
+            margin-bottom: 12px; display: none;
+        }
+    </style>
+</head>
+<body>
+
+<nav>
+    <a href="/">← Leiratozó</a>
+    <h1>Modell finomhangolása</h1>
+    <span style="width:80px"></span>
+</nav>
+
+<!-- ── Állapot panel ── -->
+<div class="card">
+    <h2>Jelenlegi állapot</h2>
+
+    <div id="ftRunningWarn" class="finetune-running-warn">
+        ⚠️ Finomhangolás fut – a leiratozás szünetel addig.
+        <button class="btn btn-red btn-sm" style="margin-left:12px" onclick="stopFinetune()">Leállítás</button>
+    </div>
+
+    <div class="status-grid">
+        <div class="status-box" id="boxSamples">
+            <div class="val" id="valUnused">–</div>
+            <div class="lbl">fel nem használt minta</div>
+        </div>
+        <div class="status-box" id="boxWindow">
+            <div class="val" id="valWindow">–</div>
+            <div class="lbl">automatikus ablak</div>
+        </div>
+        <div class="status-box" id="boxMin">
+            <div class="val" id="valMin">–</div>
+            <div class="lbl">min. minta az autóindításhoz</div>
+        </div>
+        <div class="status-box" id="boxModel">
+            <div class="val" id="valModel">–</div>
+            <div class="lbl">finomhangolt modell</div>
+        </div>
+    </div>
+
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <span id="windowBadge" class="window-badge out"><span class="dot grey"></span> –</span>
+        <button class="btn btn-orange" id="triggerBtn" onclick="triggerFinetune()">
+            ▶ Finomhangolás indítása most
+        </button>
+        <button class="btn btn-blue"   id="activateBtn" onclick="activateModel()" style="display:none">
+            ✓ Finomhangolt modell aktiválása
+        </button>
+    </div>
+    <div id="triggerMsg" style="margin-top:8px; font-size:13px;"></div>
+</div>
+
+<!-- ── Élő log ── -->
+<div class="card" id="logCard" style="display:none">
+    <h2>Finomhangolás folyamata</h2>
+    <div class="log-box" id="logBox"></div>
+</div>
+
+<!-- ── Tanítóadat feltöltés ── -->
+<div class="card">
+    <h2>Tanítóadat feltöltése</h2>
+    <div class="alert alert-info" style="margin-bottom:14px">
+        Tölts fel <strong>maximum 30 másodperces</strong> hanganyagot és a hozzá tartozó
+        <strong>javított, pontos leiratot</strong>. Ezekből tanul a modell.
+    </div>
+
+    <div class="form-row">
+        <label>Hanganyag (mp3, wav, m4a, ogg…)</label>
+        <input type="file" id="audioFile" accept=".mp3,.wav,.m4a,.ogg,.flac,.mp4">
+        <div class="form-hint">Maximum 30 másodperc. Hosszabb fájlt a program visszautasítja.</div>
+    </div>
+    <div class="form-row">
+        <label>Javított leirat</label>
+        <textarea id="transcriptText" placeholder="Ide írd a hanganyagban elhangzó pontos szöveget..."></textarea>
+    </div>
+    <button class="btn btn-green" id="uploadBtn" onclick="uploadSample()">Feltöltés</button>
+    <div id="uploadResult" class="alert" style="margin-top:10px;"></div>
+</div>
+
+<!-- ── Tanítóadatok táblázata ── -->
+<div class="card">
+    <h2>Feltöltött tanítóadatok</h2>
+    <div id="dataTableWrap">
+        <em style="color:#999; font-size:13px">Betöltés…</em>
+    </div>
+</div>
+
+<!-- ── Ütemezés beállítások ── -->
+<div class="card">
+    <h2>Automatikus ütemezés</h2>
+    <p style="font-size:13px; color:#666; margin:0 0 14px">
+        A finomhangolás automatikusan elindul munkaidőn kívül, ha elég adat áll rendelkezésre
+        és a leiratozási sor üres. Az ablak a <code>.env</code> fájlban állítható be.
+    </p>
+    <table style="font-size:13px; border-collapse:collapse; width:100%; max-width:500px;">
+        <tr>
+            <td style="padding:5px 12px 5px 0; color:#555; font-weight:600">Aktív ablak</td>
+            <td><span id="confWindow">–</span></td>
+        </tr>
+        <tr>
+            <td style="padding:5px 12px 5px 0; color:#555; font-weight:600">Min. új minta</td>
+            <td><span id="confMin">–</span></td>
+        </tr>
+    </table>
+    <p style="font-size:12px; color:#999; margin-top:12px">
+        Módosításhoz szerkeszd a <code>.env</code> fájlt:<br>
+        <code>FINETUNE_START_HOUR=22</code> &nbsp;
+        <code>FINETUNE_END_HOUR=6</code> &nbsp;
+        <code>FINETUNE_MIN_SAMPLES=5</code> &nbsp;
+        <code>FINETUNE_EPOCHS=3</code>
+    </p>
+</div>
+
+<!-- ── Futási előzmények ── -->
+<div class="card">
+    <h2>Futási előzmények</h2>
+    <div id="runsWrap"><em style="color:#999; font-size:13px">Betöltés…</em></div>
+</div>
+
+<script>
+let pollTimer = null;
+
+// ── Formázók ─────────────────────────────────────────────────────────────────
+function esc(s) {
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function fmtDt(s) {
+    return s ? s.substring(0,16).replace('T',' ') : '–';
+}
+
+// ── Status poll ───────────────────────────────────────────────────────────────
+async function pollStatus() {
+    let d;
+    try { d = await fetch('/finetune/status').then(r => r.json()); }
+    catch { return; }
+
+    // Állapot dobozok
+    document.getElementById('valUnused').textContent = d.unused_samples;
+    document.getElementById('valMin').textContent    = d.min_samples;
+    document.getElementById('valWindow').textContent =
+        `${String(d.window_start).padStart(2,'0')}:00 – ${String(d.window_end).padStart(2,'0')}:00`;
+    document.getElementById('valModel').textContent  = d.model_ready ? 'Kész ✓' : 'Nincs';
+    document.getElementById('boxModel').className    = 'status-box' + (d.model_ready ? ' active' : '');
+
+    // Időablak badge
+    const wb = document.getElementById('windowBadge');
+    if (d.in_window) {
+        wb.className = 'window-badge in';
+        wb.innerHTML = '<span class="dot green"></span> Munkaidőn kívül (aktív ablak)';
+    } else {
+        wb.className = 'window-badge out';
+        wb.innerHTML = '<span class="dot grey"></span> Munkaidőn belül';
+    }
+
+    // Konfig sorban
+    document.getElementById('confWindow').textContent =
+        `${String(d.window_start).padStart(2,'0')}:00 – ${String(d.window_end).padStart(2,'0')}:00`;
+    document.getElementById('confMin').textContent = d.min_samples + ' db';
+
+    // Futó figyelmeztetés
+    document.getElementById('ftRunningWarn').style.display = d.running ? 'block' : 'none';
+
+    // Trigger gomb
+    const tb = document.getElementById('triggerBtn');
+    tb.disabled = d.running || d.queue_busy;
+    tb.textContent = d.running ? '⟳ Fut…' : (d.queue_busy ? '⏸ Leiratozás folyik' : '▶ Finomhangolás indítása most');
+
+    // Aktiválás gomb
+    document.getElementById('activateBtn').style.display = d.model_ready ? 'inline-block' : 'none';
+
+    // Élő log
+    if (d.running || d.log_tail.length > 0) {
+        document.getElementById('logCard').style.display = 'block';
+        renderLog(d.log_tail);
+    }
+
+    // Runs tábla
+    renderRuns(d.runs);
+}
+
+function renderLog(lines) {
+    const box = document.getElementById('logBox');
+    box.innerHTML = lines.map(l => {
+        let cls = '';
+        if (l.startsWith('STEP:'))        cls = 'log-step';
+        else if (l.startsWith('EPOCH:'))  cls = 'log-epoch';
+        else if (l.includes('HIBA') || l.includes('Error')) cls = 'log-err';
+        else if (l.includes('Kész') || l.includes('=== Kész')) cls = 'log-ok';
+        return `<div class="${cls}">${esc(l)}</div>`;
+    }).join('');
+    box.scrollTop = box.scrollHeight;
+}
+
+function renderRuns(runs) {
+    const el = document.getElementById('runsWrap');
+    if (!runs || runs.length === 0) {
+        el.innerHTML = '<em style="color:#999; font-size:13px">Még nem volt finomhangolás.</em>';
+        return;
+    }
+    const rows = runs.map(r => {
+        const pill = r.status === 'done'    ? `<span class="status-pill s-done">kész</span>`
+                   : r.status === 'running' ? `<span class="status-pill s-running">fut</span>`
+                   :                          `<span class="status-pill s-failed">hiba</span>`;
+        const loss = r.last_loss != null ? r.last_loss.toFixed(4) : '–';
+        const err  = r.error_msg ? `<br><small style="color:#c62828">${esc(r.error_msg)}</small>` : '';
+        return `<tr>
+            <td>#${r.id}</td>
+            <td>${fmtDt(r.started_at)}</td>
+            <td>${fmtDt(r.finished_at)}</td>
+            <td>${pill}${err}</td>
+            <td>${r.samples_used}</td>
+            <td>${loss}</td>
+        </tr>`;
+    }).join('');
+    el.innerHTML = `<table class="runs-table">
+        <thead><tr>
+            <th>#</th><th>Kezdés</th><th>Vége</th>
+            <th>Státusz</th><th>Minták</th><th>Végső loss</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+    </table>`;
+}
+
+// ── Tanítóadatok ──────────────────────────────────────────────────────────────
+async function loadData() {
+    let d;
+    try { d = await fetch('/finetune/data').then(r => r.json()); }
+    catch { return; }
+
+    const el = document.getElementById('dataTableWrap');
+    if (!d.items || d.items.length === 0) {
+        el.innerHTML = '<em style="color:#999; font-size:13px">Még nincs feltöltött tanítóadat.</em>';
+        return;
+    }
+    const rows = d.items.map(it => {
+        const tag = it.used
+            ? `<span class="tag-used">felhasznált</span>`
+            : `<span class="tag-unused">új</span>`;
+        const del = it.used ? '' :
+            `<button class="btn btn-red btn-sm" onclick="deleteSample(${it.id})">Törlés</button>`;
+        const preview = it.transcript.length > 80
+            ? esc(it.transcript.substring(0, 78)) + '…'
+            : esc(it.transcript);
+        return `<tr>
+            <td>${it.id}</td>
+            <td>${fmtDt(it.uploaded_at)}</td>
+            <td>${it.duration_s}s</td>
+            <td class="transcript-preview" title="${esc(it.transcript)}">${preview}</td>
+            <td>${tag}</td>
+            <td>${del}</td>
+        </tr>`;
+    }).join('');
+    el.innerHTML = `<table class="data-table">
+        <thead><tr>
+            <th>#</th><th>Feltöltve</th><th>Hossz</th>
+            <th>Leirat</th><th>Státusz</th><th></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+    </table>`;
+}
+
+async function deleteSample(id) {
+    if (!confirm('Biztosan törlöd ezt a tanítóadatot?')) return;
+    const d = await fetch(`/finetune/data/${id}/delete`, { method: 'POST' }).then(r => r.json());
+    if (d.error) { alert(d.error); return; }
+    loadData();
+    pollStatus();
+}
+
+// ── Feltöltés ─────────────────────────────────────────────────────────────────
+async function uploadSample() {
+    const audioFile  = document.getElementById('audioFile').files[0];
+    const transcript = document.getElementById('transcriptText').value.trim();
+    const btn        = document.getElementById('uploadBtn');
+    const res        = document.getElementById('uploadResult');
+
+    if (!audioFile) { showUploadResult('error', 'Válassz hangfájlt!'); return; }
+    if (!transcript){ showUploadResult('error', 'A leirat szövege kötelező!'); return; }
+
+    btn.disabled = true;
+    showUploadResult('info', 'Feltöltés…');
+
+    const fd = new FormData();
+    fd.append('audio', audioFile);
+    fd.append('transcript', transcript);
+
+    try {
+        const d = await fetch('/finetune/upload', { method: 'POST', body: fd }).then(r => r.json());
+        if (d.error) {
+            showUploadResult('error', d.error);
+        } else {
+            showUploadResult('ok', `Feltöltve! Hossz: ${d.duration_s}s`);
+            document.getElementById('audioFile').value     = '';
+            document.getElementById('transcriptText').value = '';
+            loadData();
+            pollStatus();
+        }
+    } catch (e) {
+        showUploadResult('error', 'Hálózati hiba: ' + e.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function showUploadResult(type, msg) {
+    const el = document.getElementById('uploadResult');
+    el.className = 'alert alert-' + (type === 'error' ? 'error' : type === 'ok' ? 'ok' : 'info');
+    el.textContent = msg;
+    el.style.display = 'block';
+}
+
+// ── Trigger / Stop / Activate ─────────────────────────────────────────────────
+async function triggerFinetune() {
+    const d = await fetch('/finetune/trigger', { method: 'POST' }).then(r => r.json());
+    const el = document.getElementById('triggerMsg');
+    if (d.error) {
+        el.innerHTML = `<span style="color:#c62828">${esc(d.error)}</span>`;
+    } else {
+        el.innerHTML = `<span style="color:#2e7d32">Finomhangolás elindítva (run #${d.run_id})</span>`;
+        document.getElementById('logCard').style.display = 'block';
+    }
+    pollStatus();
+}
+
+async function stopFinetune() {
+    if (!confirm('Biztosan leállítod a futó finomhangolást?')) return;
+    const d = await fetch('/finetune/stop', { method: 'POST' }).then(r => r.json());
+    if (d.error) alert(d.error);
+    pollStatus();
+}
+
+async function activateModel() {
+    if (!confirm('Aktiválod a finomhangolt modellt? A következő leiratozástól ez lesz használatban.')) return;
+    const d = await fetch('/finetune/activate', { method: 'POST' }).then(r => r.json());
+    if (d.error) {
+        alert(d.error);
+    } else {
+        alert(`Aktiválva: ${d.model_dir}\n\nA változás a következő indítástól (sudo systemctl restart transcriber) érvényes.`);
+    }
+    pollStatus();
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+pollStatus();
+loadData();
+pollTimer = setInterval(pollStatus, 3000);
+</script>
+</body>
+</html>

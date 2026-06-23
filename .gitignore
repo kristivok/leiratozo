@@ -23,6 +23,8 @@ cache/
 runtime/
 transcriber.lock
 queue/
+training_data/
+finetune_output/
 
 # Generált kimeneti fájlok
 diarization_result.json
