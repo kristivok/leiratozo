@@ -732,6 +732,114 @@ def finetune_page():
     return render_template("finetune.html")
 
 
+def _parse_paragraphs(text):
+    parts = re.split(r'\n\s*\n', text.strip())
+    return [re.sub(r'\s+', ' ', p).strip() for p in parts if p.strip()]
+
+
+def _read_mp3_marker_cuts_ms(filepath):
+    """
+    Adobe Audition XMP marker-ek beolvasása PRIV:XMP ID3 frame-ből.
+    Az Audition a markereket xmpDM:startTime értékként tárolja f48000-es
+    idoalapban (48000 = sample rate, osztó az ms-re alakításhoz).
+    Visszatér az összes marker ms pozíciójával (növekvo sorrend).
+    """
+    try:
+        from mutagen.id3 import ID3
+        tags = ID3(str(filepath))
+
+        # ── 1. Standard CHAP tag-ek (ha mégis ezt írná) ───────────────────
+        chaps = tags.getall('CHAP')
+        if chaps:
+            starts = sorted(ch.start_time for ch in chaps)
+            return [t for t in starts if t > 50]
+
+        # ── 2. PRIV frame amiben XMP adat van (Adobe Audition CC+) ────────
+        xmp_str = None
+        for key in tags.keys():
+            if key.startswith('PRIV'):
+                data = tags[key].data
+                if b'xmpDM:startTime' in data:
+                    xmp_str = data.decode('utf-8', errors='ignore')
+                    break
+
+        if not xmp_str:
+            return []
+
+        # Frame rate: "f48000" -> 48000
+        fr_match = re.search(r'xmpDM:frameRate="f(\d+)"', xmp_str)
+        frame_rate = int(fr_match.group(1)) if fr_match else 48000
+
+        # Csak a CuePoint Markers track startTime értékei
+        cue_block = re.search(
+            r'xmpDM:trackName="CuePoint Markers"(.+?)xmpDM:trackName=',
+            xmp_str, re.DOTALL
+        )
+        block = cue_block.group(1) if cue_block else xmp_str
+        raw_times = [int(m) for m in re.findall(r'xmpDM:startTime="(\d+)"', block)]
+
+        if not raw_times:
+            return []
+
+        cuts_ms = sorted(int(t / frame_rate * 1000) for t in raw_times)
+        print(f"[MARKER] {len(cuts_ms)} db XMP marker (f{frame_rate}): {cuts_ms} ms", flush=True)
+        return cuts_ms
+
+    except Exception as e:
+        print(f"[MARKER] Hiba: {e}", flush=True)
+        return []
+
+
+def _split_seg_by_cuts(seg, cut_points_ms, paragraphs):
+    """
+    Audio darabolása marker pozíciók szerint, bekezdések párosításával.
+
+    N marker (elválasztó) -> N+1 szegmens -> N+1 bekezdéssel párosítva.
+    Ha a szegmensek és bekezdések száma eltér, figyelmeztetést ír ki
+    és amennyit tud, annyit párosít.
+    """
+    total  = len(seg)
+    cuts   = [c for c in sorted(cut_points_ms) if 0 < c < total]
+    bounds = [0] + cuts + [total]
+    segs   = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
+
+    n_p = len(paragraphs)
+    n_s = len(segs)
+
+    if n_s != n_p:
+        print(f"[MARKER] FIGYELEM: {n_s} szegmens vs {n_p} bekezdés – "
+              f"elso {min(n_s, n_p)} db párosítva", flush=True)
+
+    return [(seg[s:e], paragraphs[i]) for i, (s, e) in enumerate(segs) if i < n_p]
+
+
+def _split_seg_by_silence(seg, paragraphs):
+    """Fallback: N bekezdéshez az N-1 leghosszabb csend alapján vág."""
+    from pydub.silence import detect_silence as _ds
+    total = len(seg)
+    n = len(paragraphs)
+    if n == 1:
+        return [(seg, paragraphs[0])]
+    silences = _ds(seg, min_silence_len=200, silence_thresh=-40)
+    if len(silences) >= n - 1:
+        best = sorted(silences, key=lambda s: s[1] - s[0], reverse=True)[:n - 1]
+        cuts = sorted([(s + e) // 2 for s, e in best])
+    else:
+        step = total // n
+        cuts = [step * i for i in range(1, n)]
+    bounds = [0] + cuts + [total]
+    return [(seg[bounds[i]:bounds[i + 1]], paragraphs[i]) for i in range(n)]
+
+
+def _save_training_sample(audio_fn, transcript, duration_s):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT INTO training_data (audio_fn, transcript, uploaded_at, duration_s) VALUES (?,?,?,?)",
+              (audio_fn, transcript, datetime.now().isoformat(), duration_s))
+    conn.commit()
+    conn.close()
+
+
 @app.route("/finetune/upload", methods=["POST"])
 def finetune_upload():
     audio = request.files.get("audio")
@@ -743,24 +851,57 @@ def finetune_upload():
 
     os.makedirs(TRAINING_DATA_DIR, exist_ok=True)
     prefix    = datetime.now().strftime("%Y%m%d%H%M%S%f")[:18]
-    audio_fn  = f"{prefix}_{audio.filename}"
-    save_path = TRAINING_DATA_DIR / audio_fn
+    orig_fn   = f"{prefix}_{audio.filename}"
+    save_path = TRAINING_DATA_DIR / orig_fn
     audio.save(save_path)
 
-    # Konvertálás és időtartam ellenőrzése
     try:
-        seg = AudioSegment.from_file(str(save_path)).set_frame_rate(16000).set_channels(1)
+        seg        = AudioSegment.from_file(str(save_path)).set_frame_rate(16000).set_channels(1)
         duration_s = len(seg) / 1000.0
+        stem       = orig_fn.rsplit(".", 1)[0]
+
         if duration_s > 35:
+            # Hosszú fájl darabolása
+            paragraphs = _parse_paragraphs(transcript)
+            if len(paragraphs) < 2:
+                save_path.unlink(missing_ok=True)
+                return jsonify({"error": (
+                    f"A hanganyag túl hosszú ({duration_s:.1f} s). "
+                    "Maximum 30 mp engedélyezett. Hosszabb fájlhoz a leiratban "
+                    "minden bekezdés (üres sorral elválasztva) = egy hírelem."
+                )})
+
+            # 1. prioritás: Adobe Audition marker-ek (CHAP ID3 tag)
+            marker_cuts = _read_mp3_marker_cuts_ms(save_path)
             save_path.unlink(missing_ok=True)
-            return jsonify({"error": f"A hanganyag túl hosszú ({duration_s:.1f} s). Maximum 30 mp engedélyezett."})
-        # WAV-ra konvertálás
-        wav_fn   = audio_fn.rsplit(".", 1)[0] + ".wav"
+
+            if marker_cuts:
+                split_method = "marker"
+                chunks = _split_seg_by_cuts(seg, marker_cuts, paragraphs)
+            else:
+                split_method = "silence"
+                chunks = _split_seg_by_silence(seg, paragraphs)
+
+            saved = 0
+            for i, (chunk_seg, chunk_text) in enumerate(chunks, 1):
+                dur = len(chunk_seg) / 1000.0
+                if dur < 1.5 or not chunk_text:
+                    continue
+                pfx  = datetime.now().strftime("%Y%m%d%H%M%S%f")[:18]
+                cfn  = f"{pfx}_{i:03d}_{Path(audio.filename).stem}.wav"
+                chunk_seg.export(str(TRAINING_DATA_DIR / cfn), format="wav")
+                _save_training_sample(cfn, chunk_text, dur)
+                saved += 1
+            return jsonify({"ok": True, "split": True, "chunks": saved,
+                            "split_method": split_method,
+                            "duration_s": round(duration_s, 1)})
+
+        # Normál rövid fájl: WAV-ra konvertálás
+        wav_fn   = stem + ".wav"
         wav_path = TRAINING_DATA_DIR / wav_fn
         seg.export(str(wav_path), format="wav")
-        if audio_fn != wav_fn:
+        if orig_fn != wav_fn:
             save_path.unlink(missing_ok=True)
-        audio_fn = wav_fn
     except Exception as e:
         try:
             save_path.unlink(missing_ok=True)
@@ -768,12 +909,7 @@ def finetune_upload():
             pass
         return jsonify({"error": f"Hangfájl feldolgozási hiba: {e}"})
 
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("INSERT INTO training_data (audio_fn, transcript, uploaded_at, duration_s) VALUES (?,?,?,?)",
-              (audio_fn, transcript, datetime.now().isoformat(), duration_s))
-    conn.commit()
-    conn.close()
+    _save_training_sample(wav_fn, transcript, duration_s)
     return jsonify({"ok": True, "duration_s": round(duration_s, 1)})
 
 

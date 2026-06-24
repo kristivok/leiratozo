@@ -214,9 +214,11 @@ A váltás és az **alkalmazás újraindítása** a `/finetune` aloldalon keresz
 
 ---
 
-## Modell finomhangolása (lokális, privát funkció)
+## Modell finomhangolása
 
-> **Megjegyzés:** A finomhangoláshoz szükséges forrásfájlok (`finetune_run.py`, `templates/finetune.html`, `split_news.py` stb.) nem részei a publikus repónak – ezek a szerveren lokálisan léteznek.
+A `/finetune` aloldal kezeli a tanítóadat-gyűjtést, a betanítás indítását és a modellváltást.
+
+> **Megjegyzés:** A betanítást végző háttérscriptek (`finetune_run.py`, `finetune_chunks.py`, `finetune_prepare.py`, `finetune_transcript.py`, `split_news.py`) és a betanított modell (`finetune_output/`) **nem részei a publikus repónak** – csak a szerveren léteznek lokálisan.
 
 ### Tanítóadat gyűjtése – egyedi feltöltés
 
@@ -224,13 +226,28 @@ A `/finetune` aloldalon egyenként tölthető fel hanganyag (max. 30 mp) és a h
 
 ### Tanítóadat gyűjtése – tömeges feltöltés
 
-A `/finetune` oldal **Tömeges feltöltés** szekciójában egyszerre választható ki több hangfájl és a hozzájuk tartozó `.txt` leiratok. A párosítás fájlnév alapján automatikus (`hirek_001.wav` ↔ `hirek_001.txt`). A feltöltés sorban, egyenként fut a meglévő `/finetune/upload` endpointon keresztül.
+A `/finetune` oldal **Tömeges feltöltés** szekciójában egyszerre választható ki több hangfájl és a hozzájuk tartozó `.txt` leiratok. A párosítás fájlnév alapján automatikus (`hirek_001.wav` ↔ `hirek_001.txt`). A feltöltés sorban, egyenként fut a `/finetune/upload` endpointon.
 
-### Tanítóadat előkészítése hírszegmensekből (`split_news.py`)
+**Hosszú fájlok automatikus darabolása feltöltéskor:**
 
-Hosszabb (2–3 perces) híradós hanganyagok automatikusan feldarabolhatók 28 mp-es tanítódarabokra a szerver-oldali `split_news.py` scripttel.
+Ha a feltöltött hanganyag hosszabb 35 másodpercnél (pl. 2–3 perces hírszegmens), a szerver automatikusan feldarabolja és N darab tanítómintaként menti el. A darabolás módja prioritás szerint:
 
-**A szövegfájl elvárt formátuma:**
+| Prioritás | Módszer | Feltétel |
+|---|---|---|
+| 1. | **Adobe Audition XMP marker** | A fájlban `xmpDM:startTime` értékek találhatók |
+| 2. | Leghosszabb csendpontok | Nincs marker, de van több bekezdés a txt-ben |
+| 3. | Arányos időosztás | Nincs elég csendpont |
+
+**Adobe Audition marker workflow:**
+
+1. Auditionban helyezz el point markereket a hírsegmensek **közötti** elválasztó pontokra (N hírhez N−1 marker)
+2. Exportálj MP3-t – az export dialógban az **„Include Markers and Other Metadata"** legyen bepipálva
+3. Töltsd fel a `/finetune` → Tömeges feltöltés szekciójában a markerezett MP3-t és a bekezdéses txt-t
+4. A szerver kiolvas minden `xmpDM:startTime` értéket (`f48000`-es időalapból ms-re konvertálva), és pontosan ott vágja a hangot
+
+A visszajelzés megmutatja melyik módszerrel darabolódott: **„N mintára darabolva marker alapján"** vagy **„csend alapján"**.
+
+**A szövegfájl elvárt formátuma (bekezdéses):**
 
 ```
 Első hír szövege egy bekezdésben. Lehet több mondat is, de
@@ -241,37 +258,25 @@ Második hír szövege. Üres sorral elválasztva az előzőtől.
 Harmadik hír szövege.
 ```
 
-Minden üres sorral elválasztott bekezdés = egy hírelem. A script ezek számának megfelelő darabra vágja a hanganyagot, a **leghosszabb csendpontokat** használva vágási pontként.
+Minden üres sorral elválasztott bekezdés = egy hírsegmens. N marker → N+1 szegmens → N+1 bekezdéssel párosítva.
 
-**Használat:**
+### Tanítóadat lista
+
+A feltöltött minták görgethet listában jelennek meg (fix magasság, ragasztott fejléc). Minden mintánál látható a hossz, a leirat előnézete, hogy melyik futásban lett felhasználva, és törölhető.
+
+### Tanítóadat előkészítése offline (`split_news.py`)
+
+Ha nem szeretnéd a nyers fájlt a szerverre feltölteni, a szerver-oldali `split_news.py` scripttel előre feldarabolhatod a hanganyagot. A script ugyanazt a logikát alkalmazza (marker > csend > arányos), és a kimenetét a Tömeges feltöltéssel viheted fel.
 
 ```bash
-cd /srv/transcriber_app
-source venv/bin/activate
+cd /srv/transcriber_app && source venv/bin/activate
 
-# Egy fájl
+# MP3 + bekezdéses txt → darabolás split_output/ mappába
 python split_news.py hirek_0800.mp3 hirszoveg.txt
 
-# Több fájl egyszerre (txt azonos névvel az mp3 mellett)
-python split_news.py news/*.mp3
-
-# Egyedi kimeneti mappa
-python split_news.py hirek_0800.mp3 hirszoveg.txt --out tanito_adatok/
+# Több fájl, egyedi kimeneti mappa
+python split_news.py news/*.mp3 --out tanito_adatok/
 ```
-
-Kimenet: `split_output/hirek_0800_001.wav` + `hirek_0800_001.txt`, `_002`, `_003`, stb.
-
-Ezeket ezután a `/finetune` → **Tömeges feltöltés** funkcióval lehet felvinni.
-
-**Darabolási logika:**
-
-| Szövegformátum | Darabolás módja |
-|---|---|
-| N bekezdés | N darab, az N−1 leghosszabb csendpontnál vágva |
-| 1 bekezdés (folyamatos) | Arányos időosztás, csendpontoknál finomítva |
-| Elég rövid (≤ 28s) | Darabolás nélkül másolja |
-
-Ha nincs elegendő csendpont (pl. folyamatos narráció), egyenlő időarányos vágás történik, figyelmeztetéssel.
 
 ### A betanítás menete
 
@@ -524,7 +529,7 @@ leiratozo/
     └── index.html                   # Web UI (queue, progress, statisztikák)
 ```
 
-> A finomhangoláshoz tartozó fájlok (`finetune_run.py`, `templates/finetune.html`, `split_news.py` stb.) **nem részei a publikus repónak** – csak a szerveren érhetők el lokálisan.
+> A betanítást végző scriptek (`finetune_run.py`, `finetune_chunks.py`, `finetune_prepare.py`, `finetune_transcript.py`, `split_news.py`) és a betanított modell (`finetune_output/`) **nem részei a publikus repónak** – csak a szerveren léteznek lokálisan. A `/finetune` aloldal HTML-je (`templates/finetune.html`) publikus.
 
 ### Futás közben létrehozott mappák (gitignore-ban)
 
