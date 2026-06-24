@@ -25,18 +25,13 @@ transcriber.lock
 queue/
 training_data/
 finetune_output/
-finetune_run.py
-finetune_chunks.py
-finetune_prepare.py
-finetune_transcript.py
 
 # Generált kimeneti fájlok
 diarization_result.json
 final_transcription.json
 status.json
 
-# Lokális segédscriptek és tesztfájlok (nem publikusak)
-split_news.py
+# Daraboló kimenet és tesztfájlok
 split_output/
 languagetool/
 *.mp3

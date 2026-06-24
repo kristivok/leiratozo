@@ -218,7 +218,7 @@ A váltás és az **alkalmazás újraindítása** a `/finetune` aloldalon keresz
 
 A `/finetune` aloldal kezeli a tanítóadat-gyűjtést, a betanítás indítását és a modellváltást.
 
-> **Megjegyzés:** A betanítást végző háttérscriptek (`finetune_run.py`, `finetune_chunks.py`, `finetune_prepare.py`, `finetune_transcript.py`, `split_news.py`) és a betanított modell (`finetune_output/`) **nem részei a publikus repónak** – csak a szerveren léteznek lokálisan.
+> **Megjegyzés:** A betanított modell (`finetune_output/`) és a tanítóadatok (`training_data/`) **nem részei a publikus repónak** – ezek csak a szerveren léteznek lokálisan.
 
 ### Tanítóadat gyűjtése – egyedi feltöltés
 
@@ -529,7 +529,7 @@ leiratozo/
     └── index.html                   # Web UI (queue, progress, statisztikák)
 ```
 
-> A betanítást végző scriptek (`finetune_run.py`, `finetune_chunks.py`, `finetune_prepare.py`, `finetune_transcript.py`, `split_news.py`) és a betanított modell (`finetune_output/`) **nem részei a publikus repónak** – csak a szerveren léteznek lokálisan. A `/finetune` aloldal HTML-je (`templates/finetune.html`) publikus.
+> A betanított modell (`finetune_output/`) és a tanítóadatok (`training_data/`) **nem részei a publikus repónak** – ezek csak a szerveren léteznek lokálisan.
 
 ### Futás közben létrehozott mappák (gitignore-ban)
 
