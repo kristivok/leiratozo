@@ -33,6 +33,9 @@ status.json
 
 # Daraboló kimenet és tesztfájlok
 split_output/
+
+# Céges logók és ikonok
+static/
 languagetool/
 *.mp3
 *.wav
