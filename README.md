@@ -216,22 +216,79 @@ A váltás és az **alkalmazás újraindítása** a `/finetune` aloldalon keresz
 
 ## Modell finomhangolása (lokális, privát funkció)
 
-> **Megjegyzés:** A finomhangoláshoz szükséges forrásfájlok (`finetune_run.py`, `templates/finetune.html` stb.) nem részei a publikus repónak – ezek a szerveren lokálisan léteznek.
+> **Megjegyzés:** A finomhangoláshoz szükséges forrásfájlok (`finetune_run.py`, `templates/finetune.html`, `split_news.py` stb.) nem részei a publikus repónak – ezek a szerveren lokálisan léteznek.
 
-A `/finetune` aloldalon:
+### Tanítóadat gyűjtése – egyedi feltöltés
 
-- Hanganyag + javított leirat párok tölthetők fel (max. 30 mp, WAV-ra konvertálva)
-- A betanítás **kézzel indítható** – automatikus ütemezés alapból **ki van kapcsolva**
-- Minden futás **az összes feltöltött mintán** végigmegy (nem csak az újakon), így a modell nem felejti el a korábbi anyagokat
+A `/finetune` aloldalon egyenként tölthető fel hanganyag (max. 30 mp) és a hozzá tartozó javított leirat. Az oldal visszajátszót biztosít meghallgatáshoz mielőtt a szöveget begépelnéd.
+
+### Tanítóadat gyűjtése – tömeges feltöltés
+
+A `/finetune` oldal **Tömeges feltöltés** szekciójában egyszerre választható ki több hangfájl és a hozzájuk tartozó `.txt` leiratok. A párosítás fájlnév alapján automatikus (`hirek_001.wav` ↔ `hirek_001.txt`). A feltöltés sorban, egyenként fut a meglévő `/finetune/upload` endpointon keresztül.
+
+### Tanítóadat előkészítése hírszegmensekből (`split_news.py`)
+
+Hosszabb (2–3 perces) híradós hanganyagok automatikusan feldarabolhatók 28 mp-es tanítódarabokra a szerver-oldali `split_news.py` scripttel.
+
+**A szövegfájl elvárt formátuma:**
+
+```
+Első hír szövege egy bekezdésben. Lehet több mondat is, de
+csak ez a hírelem szerepeljen ebben a bekezdésben.
+
+Második hír szövege. Üres sorral elválasztva az előzőtől.
+
+Harmadik hír szövege.
+```
+
+Minden üres sorral elválasztott bekezdés = egy hírelem. A script ezek számának megfelelő darabra vágja a hanganyagot, a **leghosszabb csendpontokat** használva vágási pontként.
+
+**Használat:**
+
+```bash
+cd /srv/transcriber_app
+source venv/bin/activate
+
+# Egy fájl
+python split_news.py hirek_0800.mp3 hirszoveg.txt
+
+# Több fájl egyszerre (txt azonos névvel az mp3 mellett)
+python split_news.py news/*.mp3
+
+# Egyedi kimeneti mappa
+python split_news.py hirek_0800.mp3 hirszoveg.txt --out tanito_adatok/
+```
+
+Kimenet: `split_output/hirek_0800_001.wav` + `hirek_0800_001.txt`, `_002`, `_003`, stb.
+
+Ezeket ezután a `/finetune` → **Tömeges feltöltés** funkcióval lehet felvinni.
+
+**Darabolási logika:**
+
+| Szövegformátum | Darabolás módja |
+|---|---|
+| N bekezdés | N darab, az N−1 leghosszabb csendpontnál vágva |
+| 1 bekezdés (folyamatos) | Arányos időosztás, csendpontoknál finomítva |
+| Elég rövid (≤ 28s) | Darabolás nélkül másolja |
+
+Ha nincs elegendő csendpont (pl. folyamatos narráció), egyenlő időarányos vágás történik, figyelmeztetéssel.
+
+### A betanítás menete
+
+- Betanítás **kézzel indítható** – automatikus ütemezés alapból ki van kapcsolva
+- Minden futás **az összes feltöltött mintán** végigmegy (nem csak az újakon) → a modell nem felejti el a korábbi anyagokat
 - LoRA módszerrel tanít (`rank=8`, `alpha=32`, `target_modules: q_proj + v_proj`), majd `merge_and_unload()` után teljes modellként menti (~2.9 GB)
 
-### Tanítóadat feltöltés
+### Loss értelmezése
 
-| Korlát | Érték |
+| Loss | Jelentés |
 |---|---|
-| Maximum hossz | 30 mp |
-| Formátum | bármilyen → WAV 16kHz mono (automatikus) |
-| Leirat | kötelező, kézzel javított szöveg |
+| 2.0+ | Alig tanult |
+| 0.8–1.5 | Tanul, de kevés adat |
+| 0.3–0.6 | Egészséges tartomány |
+| 0.05 alatti | Túltanulás veszélye |
+
+A loss futások között **nem hasonlítható össze közvetlenül** – több vagy változatosabb minta magasabb loss-t adhat. A tényleges minőség csak valódi hanganyagon mérhető.
 
 ### Tanítóadatok tárolási helye
 
@@ -264,17 +321,6 @@ A `/finetune` aloldalon:
 | `output_dir` | Kimeneti könyvtár |
 | `error_msg` | Hibaüzenet (ha `failed`) |
 
-### Loss értelmezése
-
-| Loss | Jelentés |
-|---|---|
-| 2.0+ | Alig tanult |
-| 0.8–1.5 | Tanul, de kevés adat |
-| 0.3–0.6 | Egészséges tartomány |
-| 0.05 alatti | Túltanulás veszélye (kevés, homogén adat) |
-
-A loss futások között **nem hasonlítható össze közvetlenül** – több minta magasabb loss-t adhat pusztán azért, mert változatosabb az anyag. A tényleges minőség csak valódi hanganyagon mérhető.
-
 ### Automatikus ütemezés (opcionális)
 
 Alapból **ki van kapcsolva**. Bekapcsoláshoz `.env`-be:
@@ -283,7 +329,6 @@ FINETUNE_AUTO=1
 FINETUNE_START_HOUR=22
 FINETUNE_END_HOUR=6
 ```
-Ha `FINETUNE_AUTO=1`, a háttér-thread 10 percenként ellenőrzi az időablakot, és ha a leiratozási sor üres, automatikusan elindítja a tanítást.
 
 ---
 
@@ -400,7 +445,7 @@ journalctl -u transcriber -f
 | Végpont | Metódus | Leírás |
 |---|---|---|
 | `/finetune` | GET | Finomhangolás aloldal |
-| `/finetune/upload` | POST | Tanítóadat feltöltése |
+| `/finetune/upload` | POST | Egyedi tanítóadat feltöltése |
 | `/finetune/data` | GET | Feltöltött minták listája (JSON) |
 | `/finetune/data/<id>/delete` | POST | Minta törlése |
 | `/finetune/audio/<filename>` | GET | Hanganyag letöltése |
@@ -479,7 +524,7 @@ leiratozo/
     └── index.html                   # Web UI (queue, progress, statisztikák)
 ```
 
-> A finomhangoláshoz tartozó fájlok (`finetune_run.py`, `templates/finetune.html` stb.) **nem részei a publikus repónak** – csak a szerveren érhetők el lokálisan.
+> A finomhangoláshoz tartozó fájlok (`finetune_run.py`, `templates/finetune.html`, `split_news.py` stb.) **nem részei a publikus repónak** – csak a szerveren érhetők el lokálisan.
 
 ### Futás közben létrehozott mappák (gitignore-ban)
 
@@ -490,8 +535,7 @@ cache/                    # HuggingFace model cache (~3 GB / modell)
 templates/transcripts/    # Kész leiratok (30 perc után törlődnek)
 training_data/            # Finomhangoláshoz feltöltött hanganyagok
 finetune_output/          # Tanított modell (~2.9 GB)
-audio.wav                 # Konvertált audio (felülíródik)
-diarization_result.json   # Diarizáció kimenete (felülíródik)
+split_output/             # split_news.py kimenete (feltöltés előtt)
 ```
 
 ### SQLite adatbázis (`logs/transcriber.db`)
@@ -532,7 +576,7 @@ sqlite3 logs/transcriber.db "UPDATE queue SET status='pending' WHERE status='run
 - HuggingFace oldalon el kell fogadni a `pyannote/speaker-diarization-3.1` feltételeit
 
 **Hiányzó szöveg hosszú turn-öknél**
-- Whisper maximális ablaka 30 mp. A `split_long_turns()` (25 mp-es határ) ezt automatikusan kezeli minden leiratozásnál – ha régebbi futásnál merült fel, az újrafuttatás javítja.
+- Whisper maximális ablaka 30 mp. A `split_long_turns()` (25 mp-es határ) ezt automatikusan kezeli – ha régebbi futásnál merült fel, az újrafuttatás javítja.
 
 **Finomhangolás: `No module named 'peft'`**
 ```bash
@@ -540,4 +584,8 @@ sqlite3 logs/transcriber.db "UPDATE queue SET status='pending' WHERE status='run
 ```
 
 **Finomhangolás: `input_ids` hiba Whisper-rel**
-- A `LoraConfig`-ban **nem szabad** `task_type=TaskType.SEQ_2_SEQ_LM` paramétert megadni – Whisper `input_features`-t vár, nem `input_ids`-t. A `task_type` paramétert el kell hagyni.
+- A `LoraConfig`-ban **nem szabad** `task_type=TaskType.SEQ_2_SEQ_LM` paramétert megadni – Whisper `input_features`-t vár, nem `input_ids`-t.
+
+**`split_news.py`: nem talál elég csendpontot**
+- A script figyelmeztet és arányos időosztásra vált – ellenőrizd a kimenet minőségét
+- `SILENCE_DB` értékét emeld (-35, -30) ha a felvétel hangos környezetben készült

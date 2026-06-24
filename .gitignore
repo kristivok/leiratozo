@@ -36,6 +36,19 @@ diarization_result.json
 final_transcription.json
 status.json
 
+# Lokális segédscriptek és tesztfájlok (nem publikusak)
+split_news.py
+split_output/
+languagetool/
+*.mp3
+*.wav
+*.m4a
+*.ogg
+*.flac
+hirszoveg.txt
+final_transcription_*.json
+final_text_*.txt
+
 # Régi munkamappák (root tulajdonú, nem törölhető)
 working_files/
 
