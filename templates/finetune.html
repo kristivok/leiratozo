@@ -284,6 +284,66 @@
     <div id="batchResult" style="margin-top:10px;"></div>
 </div>
 
+<!-- ── Diarizáló daraboló ── -->
+<div class="card" id="dsCard">
+    <h2>Diarizáló daraboló</h2>
+    <div class="alert alert-info" style="margin-bottom:14px">
+        Tölts fel hosszabb hanganyagot (pl. interjú, riport). A rendszer bemondónként
+        és mondathatárokon <strong>~15–30 mp-es darabokra</strong> vágja, és Whisperrel
+        előzetesen leiratozza. Te javítod a szövegeket, majd egyetlen kattintással
+        importálhatod őket tanítóadatként.
+    </div>
+
+    <div style="display:grid; grid-template-columns:1fr auto; gap:12px; align-items:end; margin-bottom:14px;">
+        <div class="form-row" style="margin:0">
+            <label>Hanganyag (mp3, wav, m4a…)</label>
+            <input type="file" id="dsAudioFile" accept=".mp3,.wav,.m4a,.ogg,.flac,.mp4">
+        </div>
+        <div style="padding-bottom:2px">
+            <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer; white-space:nowrap">
+                <input type="checkbox" id="dsKeepOverlap">
+                Átfedő részek megtartása
+            </label>
+        </div>
+    </div>
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+        <button class="btn btn-blue" id="dsStartBtn" onclick="dsStart()">Darabolás indítása</button>
+        <span id="dsWorkerWarn" style="display:none; font-size:12px; color:#e65100;">
+            ⚠ A leiratozó pipeline jelenleg fut – párhuzamos GPU-terhelés lehetséges.
+        </span>
+    </div>
+
+    <!-- Folyamat log -->
+    <div id="dsProgressWrap" style="display:none; margin-bottom:12px;">
+        <div style="font-size:13px; font-weight:600; color:#555; margin-bottom:6px;">
+            Feldolgozás: <span id="dsStatusLabel">fut…</span>
+        </div>
+        <div class="log-box" id="dsLogBox" style="max-height:160px;"></div>
+    </div>
+
+    <!-- Eredmény: gombok + chunk lista -->
+    <div id="dsResultWrap" style="display:none;">
+        <div id="dsSummary" style="font-size:13px; color:#555; margin-bottom:10px;"></div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">
+            <button class="btn btn-green" id="dsImportAllBtn" onclick="dsImportAll()">
+                ▲ Összes importálása tanítóadatba
+            </button>
+            <button class="btn btn-blue" onclick="dsDownload()">
+                ↓ ZIP letöltése
+            </button>
+        </div>
+        <div id="dsImportMsg" style="font-size:13px; margin-bottom:10px;"></div>
+        <div id="dsChunkList" class="data-scroll-wrap" style="max-height:540px; overflow-y:auto;"></div>
+    </div>
+
+    <!-- Korábbi session-ök -->
+    <div id="dsPrevWrap" style="margin-top:16px; border-top:1px solid #eee; padding-top:14px; display:none;">
+        <div style="font-size:13px; font-weight:600; color:#555; margin-bottom:8px;">Korábbi darabolások</div>
+        <div id="dsPrevList"></div>
+    </div>
+</div>
+
 <!-- ── Tanítóadatok táblázata ── -->
 <div class="card">
     <h2>Feltöltött tanítóadatok</h2>
@@ -741,6 +801,259 @@ async function batchUpload() {
 pollStatus();
 loadData();
 pollTimer = setInterval(pollStatus, 3000);
+dsLoadSessions();
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DIARIZÁLÓ DARABOLÓ
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _dsCurrentSid = null;
+let _dsPollTimer  = null;
+
+async function dsStart() {
+    const fileInput = document.getElementById('dsAudioFile');
+    const f = fileInput.files && fileInput.files[0];
+    if (!f) { alert('Válassz hangfájlt!'); return; }
+
+    const btn = document.getElementById('dsStartBtn');
+    btn.disabled = true;
+
+    const fd = new FormData();
+    fd.append('audio', f);
+    if (document.getElementById('dsKeepOverlap').checked) fd.append('keep_overlap', '1');
+
+    document.getElementById('dsProgressWrap').style.display = 'block';
+    document.getElementById('dsResultWrap').style.display   = 'none';
+    document.getElementById('dsStatusLabel').textContent    = 'indul…';
+    document.getElementById('dsLogBox').innerHTML           = '';
+
+    try {
+        const d = await fetch('/finetune/diar-split/start', { method: 'POST', body: fd }).then(r => r.json());
+        if (d.error) { alert(d.error); btn.disabled = false; return; }
+        _dsCurrentSid = d.session_id;
+        clearInterval(_dsPollTimer);
+        _dsPollTimer = setInterval(() => dsPoll(_dsCurrentSid), 2000);
+    } catch (e) {
+        alert('Hálózati hiba: ' + e.message);
+        btn.disabled = false;
+    }
+}
+
+async function dsPoll(sid) {
+    let d;
+    try { d = await fetch(`/finetune/diar-split/status/${sid}`).then(r => r.json()); }
+    catch { return; }
+
+    if (d.error) { clearInterval(_dsPollTimer); return; }
+
+    const logBox = document.getElementById('dsLogBox');
+    logBox.innerHTML = (d.log_tail || []).map(l => {
+        let cls = '';
+        if (l.includes('HIBA') || l.includes('Error'))  cls = 'log-err';
+        else if (l.includes('kész') || l.includes('Kész')) cls = 'log-ok';
+        return `<div class="${cls}">${esc(l)}</div>`;
+    }).join('');
+    logBox.scrollTop = logBox.scrollHeight;
+
+    document.getElementById('dsStatusLabel').textContent =
+        d.status === 'running' ? 'fut…' : d.status === 'done' ? 'Kész ✓' : 'Hiba ✗';
+
+    if (d.status === 'done') {
+        clearInterval(_dsPollTimer);
+        document.getElementById('dsStartBtn').disabled = false;
+        dsRenderChunks(sid, d.chunks);
+        dsLoadSessions();
+    } else if (d.status === 'error') {
+        clearInterval(_dsPollTimer);
+        document.getElementById('dsStartBtn').disabled = false;
+        dsLoadSessions();
+    }
+}
+
+function dsRenderChunks(sid, chunks) {
+    const wrap = document.getElementById('dsResultWrap');
+    wrap.style.display = 'block';
+
+    const active    = chunks.filter(c => !c.deleted);
+    const total     = chunks.length;
+    const activeDur = active.reduce((s, c) => s + (c.duration_s || 0), 0);
+    const delCount  = total - active.length;
+
+    // Bemondó statisztika + tömeges törlés gombok
+    const speakers = [...new Set(chunks.map(c => c.speaker).filter(Boolean))];
+    const spkBtns = speakers.map(spk => {
+        const spkChunks  = chunks.filter(c => c.speaker === spk);
+        const spkDeleted = spkChunks.every(c => c.deleted);
+        const spkDur     = spkChunks.reduce((s, c) => s + (c.duration_s || 0), 0);
+        const idxList    = JSON.stringify(spkChunks.map(c => c.idx));
+        return spkDeleted
+            ? `<button class="btn btn-sm" style="background:#e8f5e9;color:#2e7d32;"
+                onclick="dsBulkDelete('${sid}',${idxList},false)">
+                ↩ ${esc(spk)} visszaállítása (${spkChunks.length} db)</button>`
+            : `<button class="btn btn-sm btn-red"
+                onclick="dsBulkDelete('${sid}',${idxList},true)">
+                ✕ ${esc(spk)} törlése (${spkChunks.length} db, ${(spkDur/60).toFixed(1)} p)</button>`;
+    }).join('');
+
+    document.getElementById('dsSummary').innerHTML =
+        `<strong>${active.length}</strong> / ${total} chunk aktív &nbsp;·&nbsp; ` +
+        `<strong>${(activeDur/60).toFixed(1)} perc</strong> hanganyag` +
+        (delCount ? ` &nbsp;·&nbsp; <span style="color:#e65100">${delCount} törölve</span>` : '') +
+        (spkBtns ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">${spkBtns}</div>` : '');
+
+    const rows = chunks.map((c, i) => {
+        const isDeleted = !!c.deleted;
+        const spkBadge  = c.speaker
+            ? `<span style="font-size:11px;background:#e3f2fd;color:#1565c0;border-radius:10px;padding:1px 7px">${esc(c.speaker)}</span>`
+            : '';
+        const dur      = `${c.duration_s ? c.duration_s.toFixed(1) : '?'}s`;
+        const audioUrl = `/finetune/diar-split/audio/${sid}/${encodeURIComponent(c.wav)}`;
+        const impBadge = c.imported
+            ? `<span style="font-size:11px;background:#e8f5e9;color:#2e7d32;border-radius:10px;padding:1px 7px">importálva</span>`
+            : '';
+        const delBadge = isDeleted
+            ? `<span style="font-size:11px;background:#fff3f3;color:#c62828;border-radius:10px;padding:1px 7px">törölve</span>`
+            : '';
+        const delBtn = isDeleted
+            ? `<button class="btn btn-sm" style="background:#e8f5e9;color:#2e7d32;"
+                onclick="dsToggleDelete('${sid}',${c.idx},false)">↩ Visszaállítás</button>`
+            : `<button class="btn btn-sm btn-red"
+                onclick="dsToggleDelete('${sid}',${c.idx},true)">✕ Törlés</button>`;
+
+        const wrapStyle = isDeleted
+            ? 'border-bottom:1px solid #f0f0f0;padding:10px 0;opacity:0.4;'
+            : 'border-bottom:1px solid #f0f0f0;padding:10px 0;';
+
+        return `<div style="${wrapStyle}" id="dsChunk_${i}">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+                <span style="font-size:12px;color:#888;min-width:40px">#${String(i+1).padStart(3,'0')}</span>
+                ${spkBadge}
+                <span style="font-size:12px;color:#999">${dur}</span>
+                <span id="dsImp_${i}">${impBadge}${delBadge}</span>
+                <span style="margin-left:auto">${delBtn}</span>
+            </div>
+            ${isDeleted ? '' : `
+            <audio controls src="${audioUrl}" style="width:100%;height:32px;margin-bottom:6px;border-radius:4px;"></audio>
+            <textarea id="dsTxt_${i}" rows="2"
+                style="width:100%;padding:6px 8px;font-size:13px;border:1px solid #ddd;border-radius:6px;font-family:inherit;resize:vertical;"
+            >${esc(c.text)}</textarea>
+            <button class="btn btn-sm" style="background:#e3f2fd;color:#1565c0;margin-top:4px;"
+                onclick="dsSaveOne('${sid}',${i})">Mentés</button>`}
+        </div>`;
+    }).join('');
+
+    document.getElementById('dsChunkList').innerHTML = `<div style="padding:0 2px;">${rows}</div>`;
+    document.getElementById('dsImportAllBtn').setAttribute('data-sid', sid);
+}
+
+async function dsToggleDelete(sid, idx, deleted) {
+    await fetch(`/finetune/diar-split/toggle-delete/${sid}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ indices: [idx], deleted }),
+    });
+    dsPoll(sid);
+}
+
+async function dsBulkDelete(sid, indices, deleted) {
+    await fetch(`/finetune/diar-split/toggle-delete/${sid}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ indices, deleted }),
+    });
+    dsPoll(sid);
+}
+
+async function dsSaveOne(sid, idx) {
+    const text = document.getElementById(`dsTxt_${idx}`).value.trim();
+    const d = await fetch(`/finetune/diar-split/save/${sid}/${idx}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+    }).then(r => r.json());
+    if (d.error) alert(d.error);
+}
+
+async function dsImportAll() {
+    const btn = document.getElementById('dsImportAllBtn');
+    const sid = btn.getAttribute('data-sid') || _dsCurrentSid;
+    if (!sid) return;
+    btn.disabled = true;
+
+    const d = await fetch(`/finetune/diar-split/import/${sid}`, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}) }).then(r => r.json());
+
+    const msg = document.getElementById('dsImportMsg');
+    if (d.error) {
+        msg.innerHTML = `<span style="color:#c62828">${esc(d.error)}</span>`;
+    } else {
+        msg.innerHTML = `<span style="color:#2e7d32">✓ ${d.imported} minta importálva${d.skipped ? `, ${d.skipped} kihagyva` : ''}.</span>`;
+        // Frissítse az "importálva" badge-eket
+        dsPoll(sid);
+        loadData();
+        pollStatus();
+    }
+    btn.disabled = false;
+}
+
+function dsDownload() {
+    const sid = _dsCurrentSid;
+    if (!sid) return;
+    window.location.href = `/finetune/diar-split/download/${sid}`;
+}
+
+async function dsLoadSessions() {
+    let d;
+    try { d = await fetch('/finetune/diar-split/sessions').then(r => r.json()); }
+    catch { return; }
+
+    const sessions = (d.sessions || []).filter(s => s.status !== 'running');
+    const wrap = document.getElementById('dsPrevWrap');
+    const list = document.getElementById('dsPrevList');
+
+    if (sessions.length === 0) { wrap.style.display = 'none'; return; }
+    wrap.style.display = 'block';
+
+    list.innerHTML = sessions.map(s => {
+        const statusPill = s.status === 'done'
+            ? `<span style="background:#e8f5e9;color:#2e7d32;border-radius:10px;padding:1px 7px;font-size:11px">kész</span>`
+            : `<span style="background:#fff3f3;color:#c62828;border-radius:10px;padding:1px 7px;font-size:11px">hiba</span>`;
+        const imp = s.imported > 0
+            ? `<span style="font-size:11px;color:#888"> – ${s.imported}/${s.chunk_count} importálva</span>` : '';
+        return `<div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #f5f5f5; flex-wrap:wrap;">
+            <span style="font-size:13px;font-weight:600">${esc(s.original_fn)}</span>
+            ${statusPill}
+            <span style="font-size:12px;color:#888">${(s.created_at||'').substring(0,16).replace('T',' ')}</span>
+            <span style="font-size:12px;color:#555">${s.chunk_count} chunk${imp}</span>
+            ${s.status === 'done' ? `<button class="btn btn-sm btn-blue" onclick="dsLoadSession('${s.session_id}')">Megnyitás</button>` : ''}
+            <button class="btn btn-sm btn-red" onclick="dsDeleteSession('${s.session_id}')">Törlés</button>
+        </div>`;
+    }).join('');
+}
+
+async function dsLoadSession(sid) {
+    _dsCurrentSid = sid;
+    clearInterval(_dsPollTimer);
+    document.getElementById('dsProgressWrap').style.display = 'block';
+    document.getElementById('dsStatusLabel').textContent = 'betöltés…';
+
+    let d;
+    try { d = await fetch(`/finetune/diar-split/status/${sid}`).then(r => r.json()); }
+    catch { return; }
+
+    document.getElementById('dsLogBox').innerHTML = '';
+    document.getElementById('dsStatusLabel').textContent = 'Kész ✓';
+    dsRenderChunks(sid, d.chunks);
+    document.getElementById('dsCard').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function dsDeleteSession(sid) {
+    if (!confirm('Biztosan törlöd ezt a darabolást? A WAV fájlok elvesznek (ha még nem importálta).')) return;
+    const d = await fetch(`/finetune/diar-split/delete/${sid}`, { method: 'POST' }).then(r => r.json());
+    if (d.error) alert(d.error);
+    else dsLoadSessions();
+}
 </script>
 </body>
 </html>

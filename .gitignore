@@ -33,6 +33,7 @@ status.json
 
 # Daraboló kimenet és tesztfájlok
 split_output/
+diar_split_sessions/
 
 # Céges logók és ikonok
 static/

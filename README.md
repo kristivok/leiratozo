@@ -286,6 +286,88 @@ python split_news.py hirek_0800.mp3 hirszoveg.txt
 python split_news.py news/*.mp3 --out tanito_adatok/
 ```
 
+### Tanítóadat gyűjtése – diarizáló daraboló
+
+A `/finetune` oldal **Diarizáló daraboló** szekciója hosszú, többszereplős hanganyagokból (interjú, riport, kerekasztal) automatikusan állít elő tanítóadat-jelölteket.
+
+**Workflow:**
+
+1. Feltöltöd a hanganyagot (mp3, wav, m4a, …) a webes felületen
+2. A rendszer háttérben:
+   - Diarizációt futtat (**pyannote**, CPU-n, hogy ne ütközzön a fő pipeline GPU-használatával)
+   - Whisper-rel leiratozza a teljes hanganyagot (szegmens-szintű timestampekkel)
+   - Minden szót hozzárendel a megfelelő bemondóhoz
+   - Mondathatárokon (`.!?` vagy >1,5 mp-es szünet) és bemondóváltásoknál **15–35 mp-es darabokra** csomagolja az anyagot
+3. Megjelennek a chunkok: minden darabhoz audio lejátszó + szerkeszthető szöveg mező
+4. Meghallgatod, javítod a szöveget, majd importálod a tanítóadatba
+
+**Átfedő (egymásra beszélős) szakaszok:**
+
+Az alapértelmezett viselkedés kihagyja az átfedő szakaszokat (ahol a diarizáció szerint 2+ bemondó aktív egyszerre). Az „Átfedő részek megtartása" jelölőnégyzettel ez felülírható.
+
+**Chunk törlése:**
+
+Minden chunknál van egy piros „✕ Törlés" gomb – a törölt chunk elhalványodik és nem kerül importálásra. Visszaállítható az „↩ Visszaállítás" gombbal.
+
+**Bemondónkénti tömeges törlés:**
+
+A lista felett bemondónként megjelenik egy törlés gomb (pl. `✕ SPEAKER_01 törlése (8 db, 3.2 p)`). Hasznos telefonbeszélgetéseknél, ahol csak a stúdióban lévő bemondó hangja alkalmas betanításra.
+
+**Importálás:**
+
+Az „Összes importálása tanítóadatba" gomb az összes aktív (nem törölt, nem üres szövegű) chunkot beírja a `training_data` táblába és átmásolja a WAV fájlt a `training_data/` mappába.
+
+**ZIP letöltés:**
+
+A „↓ ZIP letöltése" gomb az összes chunk WAV + TXT párját ZIP archívumban tölti le – offline javításhoz vagy más eszközzel való feldolgozáshoz.
+
+**Korábbi darabolások:**
+
+Az oldal alján megjelenik a korábbi session-ök listája. A „Megnyitás" gombbal bármelyik visszatölthető.
+
+**Parancssori használat (`diar_sentence_split.py`):**
+
+```bash
+source venv/bin/activate
+
+# Alaphasználat
+python diar_sentence_split.py --audio riport.mp3 --out tananyag/
+
+# Átfedő részek megtartásával
+python diar_sentence_split.py --audio vita.mp3 --out tananyag/ --keep-overlap
+
+# Egyedi célhossz
+python diar_sentence_split.py --audio hosszu.mp3 --out tananyag/ --target-min 20 --target-max 28
+```
+
+Kimenet: `tananyag/chunk_0001_SPEAKER_00.wav` + `tananyag/chunk_0001_SPEAKER_00.txt` párok, és `manifest.json`.
+
+Javítás után batch import:
+
+```bash
+python diar_batch_import.py --dir tananyag/
+python diar_batch_import.py --dir tananyag/ --dry-run    # csak előnézet
+python diar_batch_import.py --dir tananyag/ --min-dur 3  # min 3 mp-es chunkok
+```
+
+**Session munkamappa felépítése:**
+
+```
+diar_split_sessions/<session_id>/
+├── <eredeti_fajl>.mp3           # feltöltött hanganyag
+├── diarization_result.json      # pyannote kimenet (cachelve)
+├── manifest.json                # chunk metaadat lista
+├── state.json                   # session állapot (chunks, deleted, imported)
+├── chunk_0000_SPEAKER_00.wav
+├── chunk_0000_SPEAKER_00.txt
+├── chunk_0001_SPEAKER_01.wav
+└── ...
+```
+
+> A `diar_split_sessions/` mappa **nem része a publikus repónak**.
+
+---
+
 ### A betanítás menete
 
 - Betanítás **kézzel indítható** – automatikus ütemezés alapból ki van kapcsolva
@@ -468,6 +550,20 @@ journalctl -u transcriber -f
 | `/finetune/activate` | POST | Finomhangolt modell aktiválása (.env) |
 | `/finetune/revert` | POST | Visszaállítás az eredeti modellre (.env) |
 
+### Diarizáló daraboló
+
+| Végpont | Metódus | Leírás |
+|---|---|---|
+| `/finetune/diar-split/start` | POST | Hangfájl feltöltése, darabolás indítása |
+| `/finetune/diar-split/status/<sid>` | GET | Feldolgozás állapota, log, chunkok |
+| `/finetune/diar-split/sessions` | GET | Korábbi session-ök listája |
+| `/finetune/diar-split/audio/<sid>/<fn>` | GET | Chunk WAV fájl kiszolgálása |
+| `/finetune/diar-split/save/<sid>/<idx>` | POST | Egyedi chunk átirat mentése |
+| `/finetune/diar-split/toggle-delete/<sid>` | POST | Chunk(ok) törlése / visszaállítása |
+| `/finetune/diar-split/import/<sid>` | POST | Aktív chunkok importálása tanítóadatba |
+| `/finetune/diar-split/download/<sid>` | GET | ZIP letöltés (WAV + TXT párok) |
+| `/finetune/diar-split/delete/<sid>` | POST | Session törlése |
+
 ### `POST /upload` válasz
 
 ```json
@@ -532,12 +628,19 @@ leiratozo/
 ├── step1_merge_diar.py              # Standalone: diarizációs szegmensek egyesítése
 ├── step2_split_audio.py             # Standalone: audio felszeletelés
 ├── step3_transcribe.py              # Standalone: ASR pipeline
+├── diar_sentence_split.py           # Diarizáló daraboló (parancssori)
+├── diar_batch_import.py             # Batch import javított chunkokból
+├── finetune_chunks.py               # Finomhangoláshoz: chunk előkészítő
+├── finetune_prepare.py              # Finomhangoláshoz: mappa előkészítő
+├── finetune_run.py                  # Finomhangolás futtatója (LoRA)
+├── finetune_transcript.py           # Finomhangoláshoz: leirat-előkészítő
+├── split_news.py                    # Hírszegmensek darabolása feltöltés előtt
 ├── check_gpu.py                     # GPU ellenőrzés
 ├── transcriber.service              # systemd service unit
 ├── requirements.txt                 # Python függőségek
-├── static/                          # Ikonok, statikus fájlok
 └── templates/
-    └── index.html                   # Web UI (queue, progress, statisztikák)
+    ├── index.html                   # Web UI (queue, progress, statisztikák)
+    └── finetune.html                # Finomhangolás aloldal
 ```
 
 > A betanított modell (`finetune_output/`) és a tanítóadatok (`training_data/`) **nem részei a publikus repónak** – ezek csak a szerveren léteznek lokálisan.
@@ -549,6 +652,7 @@ queue/                    # Feltöltött, feldolgozásra váró fájlok
 logs/                     # SQLite (transcriber.db)
 cache/                    # HuggingFace model cache (~3 GB / modell)
 templates/transcripts/    # Kész leiratok (30 perc után törlődnek)
+diar_split_sessions/      # Diarizáló daraboló ideiglenes session mappái
 training_data/            # Finomhangoláshoz feltöltött hanganyagok
 finetune_output/          # Tanított modell (~2.9 GB)
 split_output/             # split_news.py kimenete (feltöltés előtt)

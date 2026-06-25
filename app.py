@@ -1,5 +1,5 @@
 from flask import Flask, request, render_template, send_from_directory, jsonify
-import os, sys, subprocess, time, sqlite3, threading, re
+import os, sys, subprocess, time, sqlite3, threading, re, json, uuid, zipfile, shutil, io
 from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv, set_key
@@ -1034,6 +1034,310 @@ def restart_app():
         time.sleep(0.8)
         os.execv(sys.executable, [sys.executable] + sys.argv)
     threading.Thread(target=_do, daemon=False).start()
+    return jsonify({"ok": True})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DIARIZÁLÓ DARABOLÓ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+DIAR_SPLIT_DIR = BASE_DIR / "diar_split_sessions"
+DIAR_SPLIT_DIR.mkdir(exist_ok=True)
+
+_diar_jobs      = {}   # session_id -> {"log": [...], "status": "running"|"done"|"error", "proc": ...}
+_diar_jobs_lock = threading.Lock()
+
+
+def _ds_state_path(sid):
+    return DIAR_SPLIT_DIR / sid / "state.json"
+
+def _ds_load_state(sid):
+    p = _ds_state_path(sid)
+    if p.exists():
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+def _ds_save_state(sid, state):
+    p = _ds_state_path(sid)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, ensure_ascii=False)
+
+
+@app.route("/finetune/diar-split/start", methods=["POST"])
+def diar_split_start():
+    f = request.files.get("audio")
+    if not f or not f.filename:
+        return jsonify({"error": "Nincs hangfájl csatolva."})
+
+    keep_overlap = request.form.get("keep_overlap") == "1"
+
+    sid      = uuid.uuid4().hex[:10]
+    sess_dir = DIAR_SPLIT_DIR / sid
+    sess_dir.mkdir(parents=True, exist_ok=True)
+
+    orig_fn    = Path(f.filename).name
+    audio_path = sess_dir / orig_fn
+    f.save(str(audio_path))
+
+    state = {
+        "session_id": sid,
+        "original_fn": orig_fn,
+        "created_at": datetime.now().isoformat(),
+        "status": "running",
+        "keep_overlap": keep_overlap,
+        "chunks": [],
+    }
+    _ds_save_state(sid, state)
+
+    with _diar_jobs_lock:
+        _diar_jobs[sid] = {"log": ["Feldolgozás indul..."], "status": "running", "proc": None}
+
+    def _worker():
+        cmd = [
+            sys.executable, str(BASE_DIR / "diar_sentence_split.py"),
+            "--audio", str(audio_path),
+            "--out",   str(sess_dir),
+            "--diar-cache", str(sess_dir / "diarization_result.json"),
+        ]
+        if keep_overlap:
+            cmd.append("--keep-overlap")
+
+        env = os.environ.copy()
+        env["DIARIZATION_DEVICE"] = "cpu"  # pyannote CPU-n fut, hogy ne ütközzön a fő pipeline-nal
+
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=env
+        )
+        with _diar_jobs_lock:
+            _diar_jobs[sid]["proc"] = proc
+
+        for raw in proc.stdout:
+            line = raw.rstrip()
+            if not line:
+                continue
+            with _diar_jobs_lock:
+                _diar_jobs[sid]["log"].append(line)
+                if len(_diar_jobs[sid]["log"]) > 300:
+                    _diar_jobs[sid]["log"] = _diar_jobs[sid]["log"][-300:]
+
+        proc.stdout.close()
+        rc   = proc.wait()
+        ok   = rc == 0
+        s    = _ds_load_state(sid) or state.copy()
+        manifest_p = sess_dir / "manifest.json"
+
+        if ok and manifest_p.exists():
+            with open(manifest_p, encoding="utf-8") as mf:
+                manifest = json.load(mf)
+            chunks = []
+            for item in manifest:
+                chunks.append({
+                    "idx":        len(chunks),
+                    "wav":        Path(item["wav"]).name,
+                    "txt":        Path(item["txt"]).name,
+                    "speaker":    item.get("speaker", ""),
+                    "start":      item.get("start", 0),
+                    "end":        item.get("end", 0),
+                    "duration_s": item.get("duration_s", 0),
+                    "text":       item.get("text", ""),
+                    "imported":   False,
+                })
+            s["chunks"] = chunks
+            s["status"] = "done"
+        else:
+            s["status"] = "error"
+
+        _ds_save_state(sid, s)
+        finish_msg = "=== Darabolás kész ===" if ok else f"=== HIBA (kód {rc}) ==="
+        with _diar_jobs_lock:
+            _diar_jobs[sid]["status"] = s["status"]
+            _diar_jobs[sid]["log"].append(finish_msg)
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return jsonify({"ok": True, "session_id": sid})
+
+
+@app.route("/finetune/diar-split/status/<session_id>")
+def diar_split_status_route(session_id):
+    state = _ds_load_state(session_id)
+    if not state:
+        return jsonify({"error": "Ismeretlen session."})
+
+    with _diar_jobs_lock:
+        job = _diar_jobs.get(session_id)
+
+    log_tail = job["log"][-80:] if job else []
+    status   = (job["status"] if job else None) or state.get("status", "unknown")
+
+    return jsonify({
+        "status":      status,
+        "log_tail":    log_tail,
+        "chunks":      state.get("chunks", []) if status == "done" else [],
+        "original_fn": state.get("original_fn", ""),
+        "created_at":  state.get("created_at", ""),
+    })
+
+
+@app.route("/finetune/diar-split/sessions")
+def diar_split_sessions_list():
+    sessions = []
+    for d in sorted(DIAR_SPLIT_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        if not d.is_dir():
+            continue
+        s = _ds_load_state(d.name)
+        if not s:
+            continue
+        sessions.append({
+            "session_id":  d.name,
+            "original_fn": s.get("original_fn", ""),
+            "created_at":  s.get("created_at", ""),
+            "status":      s.get("status", "unknown"),
+            "chunk_count": len(s.get("chunks", [])),
+            "imported":    sum(1 for c in s.get("chunks", []) if c.get("imported")),
+        })
+    return jsonify({"sessions": sessions})
+
+
+@app.route("/finetune/diar-split/audio/<session_id>/<path:filename>")
+def diar_split_audio(session_id, filename):
+    sess_dir = DIAR_SPLIT_DIR / session_id
+    if not sess_dir.exists():
+        return "Not found", 404
+    return send_from_directory(str(sess_dir), filename)
+
+
+@app.route("/finetune/diar-split/save/<session_id>/<int:chunk_idx>", methods=["POST"])
+def diar_split_save(session_id, chunk_idx):
+    state = _ds_load_state(session_id)
+    if not state:
+        return jsonify({"error": "Ismeretlen session."})
+    if chunk_idx >= len(state.get("chunks", [])):
+        return jsonify({"error": "Érvénytelen chunk index."})
+
+    text      = (request.json or {}).get("text", "").strip()
+    txt_path  = DIAR_SPLIT_DIR / session_id / state["chunks"][chunk_idx]["txt"]
+    txt_path.write_text(text + "\n", encoding="utf-8")
+    state["chunks"][chunk_idx]["text"] = text
+    _ds_save_state(session_id, state)
+    return jsonify({"ok": True})
+
+
+@app.route("/finetune/diar-split/import/<session_id>", methods=["POST"])
+def diar_split_import(session_id):
+    state = _ds_load_state(session_id)
+    if not state:
+        return jsonify({"error": "Ismeretlen session."})
+
+    sess_dir = DIAR_SPLIT_DIR / session_id
+    TRAINING_DATA_DIR.mkdir(exist_ok=True)
+    conn     = sqlite3.connect(DB_FILE)
+    now      = datetime.now().isoformat()
+    imported = skipped = 0
+
+    body    = request.json or {}
+    indices = body.get("indices")  # None = összes
+
+    for chunk in state.get("chunks", []):
+        if indices is not None and chunk["idx"] not in indices:
+            continue
+        if chunk.get("deleted"):
+            skipped += 1
+            continue
+        if chunk.get("imported"):
+            skipped += 1
+            continue
+        text = chunk.get("text", "").strip()
+        if not text:
+            skipped += 1
+            continue
+        wav_src = sess_dir / chunk["wav"]
+        if not wav_src.exists():
+            skipped += 1
+            continue
+
+        dest = TRAINING_DATA_DIR / wav_src.name
+        c = 1
+        while dest.exists():
+            dest = TRAINING_DATA_DIR / f"{wav_src.stem}_{c}.wav"
+            c += 1
+
+        shutil.copy2(str(wav_src), str(dest))
+        conn.execute(
+            "INSERT INTO training_data (audio_fn, transcript, uploaded_at, duration_s) VALUES (?,?,?,?)",
+            (str(dest), text, now, chunk["duration_s"])
+        )
+        conn.commit()
+        chunk["imported"] = True
+        imported += 1
+
+    conn.close()
+    _ds_save_state(session_id, state)
+    return jsonify({"ok": True, "imported": imported, "skipped": skipped})
+
+
+@app.route("/finetune/diar-split/toggle-delete/<session_id>", methods=["POST"])
+def diar_split_toggle_delete(session_id):
+    state = _ds_load_state(session_id)
+    if not state:
+        return jsonify({"error": "Ismeretlen session."})
+
+    body    = request.json or {}
+    indices = body.get("indices", [])   # lista vagy egyetlen index is lehet
+    if isinstance(indices, int):
+        indices = [indices]
+    deleted = body.get("deleted", True)  # True = törlés, False = visszaállítás
+
+    for chunk in state.get("chunks", []):
+        if chunk["idx"] in indices:
+            chunk["deleted"] = deleted
+
+    _ds_save_state(session_id, state)
+    return jsonify({"ok": True})
+
+
+@app.route("/finetune/diar-split/download/<session_id>")
+def diar_split_download(session_id):
+    state = _ds_load_state(session_id)
+    if not state or state.get("status") != "done":
+        return "Not found", 404
+
+    sess_dir = DIAR_SPLIT_DIR / session_id
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for chunk in state.get("chunks", []):
+            wav_p = sess_dir / chunk["wav"]
+            txt_p = sess_dir / chunk["txt"]
+            if wav_p.exists():
+                zf.write(wav_p, chunk["wav"])
+            if txt_p.exists():
+                zf.write(txt_p, chunk["txt"])
+
+    buf.seek(0)
+    orig = Path(state.get("original_fn", "session")).stem
+    from flask import Response
+    return Response(
+        buf.read(),
+        mimetype="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{orig}_chunks.zip"'},
+    )
+
+
+@app.route("/finetune/diar-split/delete/<session_id>", methods=["POST"])
+def diar_split_delete(session_id):
+    sess_dir = DIAR_SPLIT_DIR / session_id
+    if not sess_dir.exists():
+        return jsonify({"error": "Nem található."})
+    with _diar_jobs_lock:
+        job = _diar_jobs.pop(session_id, None)
+        if job and job.get("proc"):
+            try:
+                job["proc"].terminate()
+            except Exception:
+                pass
+    shutil.rmtree(str(sess_dir), ignore_errors=True)
     return jsonify({"ok": True})
 
 
