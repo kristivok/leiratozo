@@ -218,6 +218,14 @@ A váltás és az **alkalmazás újraindítása** a `/finetune` aloldalon keresz
 
 A `/finetune` aloldal kezeli a tanítóadat-gyűjtést, a betanítás indítását és a modellváltást.
 
+**Jelenlegi állapot panel – 3 doboz:**
+
+| Doboz | Tartalom |
+|---|---|
+| feltöltött tanítóminta | Darabszám |
+| hanganyag összesen | Összes feltöltött hanganyag hossza (ó / p / mp formátumban) |
+| finomhangolt modell | Kész ✓ ha `finetune_output/config.json` létezik |
+
 > **Megjegyzés:** A betanított modell (`finetune_output/`) és a tanítóadatok (`training_data/`) **nem részei a publikus repónak** – ezek csak a szerveren léteznek lokálisan.
 
 ### Tanítóadat gyűjtése – egyedi feltöltés
@@ -493,6 +501,7 @@ journalctl -u transcriber -f
   "running": false,
   "queue_busy": false,
   "total_samples": 43,
+  "total_duration_s": 892,
   "model_ready": true,
   "model_dir": "/srv/transcriber_app/finetune_output",
   "active_model": "finetune",
@@ -504,6 +513,8 @@ journalctl -u transcriber -f
   }]
 }
 ```
+
+`total_duration_s` – az összes feltöltött tanítóhanganyag hossza másodpercben (a UI óra/perc/mp formátumban jeleníti meg).
 
 ---
 

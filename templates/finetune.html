@@ -175,6 +175,10 @@
             <div class="val" id="valTotal">–</div>
             <div class="lbl">feltöltött tanítóminta</div>
         </div>
+        <div class="status-box" id="boxDuration">
+            <div class="val" id="valDuration">–</div>
+            <div class="lbl">hanganyag összesen</div>
+        </div>
         <div class="status-box" id="boxModel">
             <div class="val" id="valModel">–</div>
             <div class="lbl">finomhangolt modell</div>
@@ -348,6 +352,17 @@ async function pollStatus() {
     // Állapot dobozok
     document.getElementById('valTotal').textContent = d.total_samples;
     document.getElementById('valModel').textContent  = d.model_ready ? 'Kész ✓' : 'Nincs';
+
+    // Hanganyag időtartam
+    const sec = d.total_duration_s || 0;
+    const h   = Math.floor(sec / 3600);
+    const m   = Math.floor((sec % 3600) / 60);
+    const s   = sec % 60;
+    let durTxt = '';
+    if (h > 0)      durTxt = `${h} ó ${m} p`;
+    else if (m > 0) durTxt = `${m} p ${s} mp`;
+    else            durTxt = `${s} mp`;
+    document.getElementById('valDuration').textContent = durTxt;
     document.getElementById('boxModel').className    = 'status-box' + (d.model_ready ? ' active' : '');
 
     // Futó figyelmeztetés

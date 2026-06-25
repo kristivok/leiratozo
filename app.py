@@ -963,6 +963,8 @@ def finetune_status():
              "status": r[3], "samples_used": r[4],
              "last_loss": r[5], "error_msg": r[6]} for r in c.fetchall()]
     total = _ft_count_all()
+    c.execute("SELECT COALESCE(SUM(duration_s), 0) FROM training_data")
+    total_duration_s = c.fetchone()[0]
     conn.close()
 
     active_dir    = os.environ.get("WHISPER_MODEL_DIR", "").strip()
@@ -974,6 +976,7 @@ def finetune_status():
         "running":          _finetune_running,
         "queue_busy":       _worker_running,
         "total_samples":    total,
+        "total_duration_s": round(total_duration_s),
         "model_ready":      ft_ready,
         "model_dir":        str(FINETUNE_OUTPUT),
         "active_model":     "finetune" if active_is_ft else "original",
