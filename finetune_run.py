@@ -30,10 +30,11 @@ DB_FILE           = BASE_DIR / "logs" / "transcriber.db"
 TRAINING_DATA_DIR = BASE_DIR / "training_data"
 FINETUNE_OUTPUT   = BASE_DIR / "finetune_output"
 
-LORA_RANK  = int(os.environ.get("FINETUNE_LORA_RANK",   "8"))
-LORA_ALPHA = int(os.environ.get("FINETUNE_LORA_ALPHA",  "32"))
+LORA_RANK  = int(os.environ.get("FINETUNE_LORA_RANK",   "32"))
+LORA_ALPHA = int(os.environ.get("FINETUNE_LORA_ALPHA",  "64"))
 EPOCHS     = int(os.environ.get("FINETUNE_EPOCHS",      "3"))
 BATCH_SIZE = int(os.environ.get("FINETUNE_BATCH_SIZE",  "4"))
+GRAD_ACCUM = int(os.environ.get("FINETUNE_GRAD_ACCUM",  "1"))
 LR         = float(os.environ.get("FINETUNE_LR",        "1e-4"))
 MAX_STEPS  = int(os.environ.get("FINETUNE_MAX_STEPS",   "0"))  # 0 = korlátlan
 
@@ -105,14 +106,27 @@ def run_finetune(run_id: int):
     lora_cfg = LoraConfig(
         r=LORA_RANK,
         lora_alpha=LORA_ALPHA,
-        target_modules=["q_proj", "v_proj"],
+        target_modules=["q_proj", "k_proj", "v_proj", "out_proj"],
         lora_dropout=0.05,
         bias="none",
     )
     model = get_peft_model(model, lora_cfg)
+
+    # Encoder lefagyasztása PEFT után — LoRA paramétereket is beleértve.
+    # Így a backprop csak a decoder LoRA súlyain fut át.
+    frozen = 0
+    for name, param in model.named_parameters():
+        if ".encoder." in name:
+            param.requires_grad_(False)
+            frozen += 1
+    log(f"Encoder lefagyasztva ({frozen} param, csak decoder LoRA tanítható).")
+
     model.to(device)
+    torch.cuda.empty_cache()
+
     trainable, total = model.get_nb_trainable_parameters()
     log(f"Tanítható paraméterek: {trainable:,} / {total:,} ({100*trainable/total:.2f}%)")
+    log(f"GPU memória betöltés után: {torch.cuda.memory_allocated()/1e9:.1f} GB")
     model.train()
 
     # ── Dataset ──────────────────────────────────────────────────────────────
@@ -144,9 +158,11 @@ def run_finetune(run_id: int):
             padded[i, :b["labels"].shape[0]] = b["labels"]
         return {"input_features": feats, "labels": padded}
 
-    loader      = DataLoader(_DS(samples), batch_size=BATCH_SIZE, shuffle=True,
-                             collate_fn=_collate, num_workers=0)
-    total_steps = EPOCHS * len(loader)
+    loader = DataLoader(_DS(samples), batch_size=BATCH_SIZE, shuffle=True,
+                        collate_fn=_collate, num_workers=0)
+    # Optimizer lépések száma (mini-batch / GRAD_ACCUM)
+    opt_steps_per_epoch = max(1, len(loader) // GRAD_ACCUM)
+    total_steps = EPOCHS * opt_steps_per_epoch
     if MAX_STEPS > 0:
         total_steps = min(total_steps, MAX_STEPS)
 
@@ -157,31 +173,43 @@ def run_finetune(run_id: int):
         num_training_steps=total_steps,
     )
 
-    log(f"Tanítás: {EPOCHS} epoch, batch={BATCH_SIZE}, lr={LR}, max_steps={total_steps}")
+    log(f"Tanítás: {EPOCHS} epoch, batch={BATCH_SIZE}×{GRAD_ACCUM}={BATCH_SIZE*GRAD_ACCUM} "
+        f"(grad_accum={GRAD_ACCUM}), lr={LR}, opt_steps={total_steps}")
 
     global_step = 0
     last_loss   = None
+    optimizer.zero_grad()
+
     for epoch in range(1, EPOCHS + 1):
-        epoch_loss  = 0.0
-        epoch_steps = 0
+        epoch_loss   = 0.0
+        epoch_steps  = 0
+        accum_loss   = 0.0
+        mini_step    = 0
+
         for batch in loader:
             if MAX_STEPS > 0 and global_step >= MAX_STEPS:
                 break
+
             inp    = batch["input_features"].to(device, dtype=dtype)
             labels = batch["labels"].to(device)
 
-            loss = model(input_features=inp, labels=labels).loss
+            loss = model(input_features=inp, labels=labels).loss / GRAD_ACCUM
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            sched.step()
-            optimizer.zero_grad()
+            accum_loss += loss.item()
+            mini_step  += 1
 
-            last_loss    = loss.item()
-            epoch_loss  += last_loss
-            epoch_steps += 1
-            global_step += 1
-            log(f"STEP: {global_step}/{total_steps} loss={last_loss:.4f}")
+            if mini_step % GRAD_ACCUM == 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                sched.step()
+                optimizer.zero_grad()
+
+                last_loss    = accum_loss
+                epoch_loss  += last_loss
+                epoch_steps += 1
+                global_step += 1
+                accum_loss   = 0.0
+                log(f"STEP: {global_step}/{total_steps} loss={last_loss:.4f}")
 
         avg = epoch_loss / max(epoch_steps, 1)
         log(f"EPOCH: {epoch}/{EPOCHS} avg_loss={avg:.4f}")

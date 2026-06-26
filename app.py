@@ -934,6 +934,22 @@ def finetune_audio(filename):
     return send_from_directory(str(TRAINING_DATA_DIR), filename)
 
 
+@app.route("/finetune/data/<int:item_id>/edit", methods=["POST"])
+def finetune_edit(item_id):
+    text = (request.json or {}).get("transcript", "").strip()
+    if not text:
+        return jsonify({"error": "A leirat nem lehet üres."})
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE training_data SET transcript=? WHERE id=?", (text, item_id))
+    if c.rowcount == 0:
+        conn.close()
+        return jsonify({"error": "Nem található."})
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
 @app.route("/finetune/data/<int:item_id>/delete", methods=["POST"])
 def finetune_delete(item_id):
     conn = sqlite3.connect(DB_FILE)

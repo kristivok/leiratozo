@@ -232,6 +232,10 @@ A `/finetune` aloldal kezeli a tanítóadat-gyűjtést, a betanítás indítás�
 
 A `/finetune` aloldalon egyenként tölthető fel hanganyag (max. 30 mp) és a hozzá tartozó javított leirat. Az oldal visszajátszót biztosít meghallgatáshoz mielőtt a szöveget begépelnéd.
 
+### Feltöltött tanítóadatok szerkesztése
+
+A feltöltött tanítóadatok táblázatában minden sorra kattintva legördül egy szerkesztő panel, ahol a teljes leirat módosítható. A mentés azonnal frissíti az adatbázist és a táblázat előnézetét is. A `POST /finetune/data/<id>/edit` endpoint kezeli a mentést.
+
 ### Tanítóadat gyűjtése – tömeges feltöltés
 
 A `/finetune` oldal **Tömeges feltöltés** szekciójában egyszerre választható ki több hangfájl és a hozzájuk tartozó `.txt` leiratok. A párosítás fájlnév alapján automatikus (`hirek_001.wav` ↔ `hirek_001.txt`). A feltöltés sorban, egyenként fut a `/finetune/upload` endpointon.
@@ -296,14 +300,18 @@ A `/finetune` oldal **Diarizáló daraboló** szekciója hosszú, többszereplő
 2. A rendszer háttérben:
    - Diarizációt futtat (**pyannote**, CPU-n, hogy ne ütközzön a fő pipeline GPU-használatával)
    - Whisper-rel leiratozza a teljes hanganyagot (szegmens-szintű timestampekkel)
-   - Minden szót hozzárendel a megfelelő bemondóhoz
-   - Mondathatárokon (`.!?` vagy >1,5 mp-es szünet) és bemondóváltásoknál **15–35 mp-es darabokra** csomagolja az anyagot
+   - Minden szegmenshez hozzárendeli a domináns bemondót (speaker purity alapján)
+   - Mondathatárokon (`.!?`) és bemondóváltásoknál **12–25 mp-es darabokra** csomagolja az anyagot (max. 28,5 mp – Whisper 30 mp-es ablaka alatt marad)
 3. Megjelennek a chunkok: minden darabhoz audio lejátszó + szerkeszthető szöveg mező
 4. Meghallgatod, javítod a szöveget, majd importálod a tanítóadatba
 
 **Átfedő (egymásra beszélős) szakaszok:**
 
-Az alapértelmezett viselkedés kihagyja az átfedő szakaszokat (ahol a diarizáció szerint 2+ bemondó aktív egyszerre). Az „Átfedő részek megtartása" jelölőnégyzettel ez felülírható.
+A rendszer két rétegben szűri az átfedő szakaszokat:
+- **pyannote overlap-zóna:** ha a szegmens bármely 0,3 mp-es részlete átfed egy detektált átfedő zónával → kihagyva
+- **Speaker purity:** ha a szegmens kevesebb mint 80%-án egyetlen bemondó hallatszik → kihagyva
+
+Az „Átfedő részek megtartása" jelölőnégyzettel mindkét szűrő kikapcsolható.
 
 **Chunk törlése:**
 
@@ -372,7 +380,10 @@ diar_split_sessions/<session_id>/
 
 - Betanítás **kézzel indítható** – automatikus ütemezés alapból ki van kapcsolva
 - Minden futás **az összes feltöltött mintán** végigmegy (nem csak az újakon) → a modell nem felejti el a korábbi anyagokat
-- LoRA módszerrel tanít (`rank=8`, `alpha=32`, `target_modules: q_proj + v_proj`), majd `merge_and_unload()` után teljes modellként menti (~2.9 GB)
+- LoRA módszerrel tanít (`rank=32`, `alpha=64`, `target_modules: q_proj + k_proj + v_proj + out_proj`), majd `merge_and_unload()` után teljes modellként menti (~2.9 GB)
+- Az encoder súlyai le vannak fagyasztva – csak a decoder LoRA rétegei tanulnak, ez ~50%-kal csökkenti a VRAM-igényt a backprop során
+- Gradient accumulation támogatás: kis batch méret esetén több mini-batch gradiensét összegzi egy optimizer lépés előtt (`FINETUNE_GRAD_ACCUM` env var)
+- Alapértelmezett konfiguráció: `batch=4`, `accum=1`, ~9–10 GB VRAM, ~210 optimizer lépés 3 epoch és 278 minta esetén
 
 ### Loss értelmezése
 
@@ -485,18 +496,32 @@ Az első `python app.py` indításkor a program bekéri és `.env`-be menti a sz
 | `FINETUNE_END_HOUR` | Auto ablak vége (óra) | `6` |
 | `FINETUNE_EPOCHS` | Tanítási epoch-ok száma | `3` |
 | `FINETUNE_BATCH_SIZE` | Batch méret tanítás közben | `4` |
+| `FINETUNE_GRAD_ACCUM` | Gradient accumulation lépések | `1` |
 | `FINETUNE_LR` | Tanulási ráta | `1e-4` |
-| `FINETUNE_LORA_RANK` | LoRA rang | `8` |
-| `FINETUNE_LORA_ALPHA` | LoRA alpha | `32` |
+| `FINETUNE_LORA_RANK` | LoRA rang | `32` |
+| `FINETUNE_LORA_ALPHA` | LoRA alpha | `64` |
 | `FINETUNE_MAX_STEPS` | Max lépések (`0`=korlátlan) | `0` |
 
-### VRAM és pontosság
+### VRAM és pontosság – ASR (átirat)
 
 | ASR_BATCH_SIZE | ASR_NUM_BEAMS | Becsült VRAM | Jelleg |
 |---|---|---|---|
 | 8 | 5 | ~11–12 GB | **alapértelmezett** |
 | 8 | 3 | ~10 GB | egyensúly |
 | 16 | 1 | ~5–6 GB | greedy, gyors |
+
+### VRAM és pontosság – finomhangolás
+
+Az encoder le van fagyasztva, csak a decoder LoRA súlyai tanulnak.
+
+| FINETUNE_BATCH_SIZE | FINETUNE_LORA_RANK | Becsült VRAM | Jelleg |
+|---|---|---|---|
+| 4 | 32 | ~9–10 GB | **alapértelmezett** – egyensúly |
+| 1 | 32 | ~4–5 GB | kis VRAM, lassabb |
+| 4 | 8 | ~6–7 GB | kevesebb tanítható param |
+| 8 | 32 | ~14 GB | nagy VRAM, de kevesebb optimizer lépés |
+
+> Ha VRAM hiba (OOM) jelentkezik, csökkentsd a `FINETUNE_BATCH_SIZE`-t vagy a `FINETUNE_LORA_RANK`-ot `.env`-ben.
 
 ---
 
@@ -542,6 +567,7 @@ journalctl -u transcriber -f
 | `/finetune` | GET | Finomhangolás aloldal |
 | `/finetune/upload` | POST | Egyedi tanítóadat feltöltése |
 | `/finetune/data` | GET | Feltöltött minták listája (JSON) |
+| `/finetune/data/<id>/edit` | POST | Minta leiratának szerkesztése |
 | `/finetune/data/<id>/delete` | POST | Minta törlése |
 | `/finetune/audio/<filename>` | GET | Hanganyag letöltése |
 | `/finetune/status` | GET | Státusz, log, futási előzmények |

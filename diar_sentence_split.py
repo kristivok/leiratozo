@@ -42,9 +42,11 @@ else:
     MODEL_PATH = _model_id
 CACHE_DIR = os.getenv("HF_CACHE_DIR", str(BASE_DIR / "cache"))
 
-TARGET_MIN_S = 15.0   # rövidebb mint ez: folytassuk a következő mondattal
-TARGET_MAX_S = 35.0   # ha elértük: mindenképp vágjuk (ha van mondatvég)
-HARD_MAX_S   = 40.0   # abszolút max, mondathatártól függetlenül
+TARGET_MIN_S = 12.0   # rövidebb mint ez: folytassuk a következő mondattal
+TARGET_MAX_S = 25.0   # ha elértük: mindenképp vágjuk (ha van mondatvég)
+HARD_MAX_S   = 28.5   # abszolút max – Whisper 30s-os ablaka, 100ms padding után is biztonságos
+
+MIN_PURITY   = 0.80   # legalább ennyi arányban egyetlen bemondóé legyen a szegmens
 
 SENTENCE_END = re.compile(r'[.!?…]\s*$')
 
@@ -114,18 +116,42 @@ def find_overlaps(segments: list[dict]) -> list[tuple[float, float]]:
     return overlaps
 
 
-def in_overlap(t_start: float, t_end: float, overlaps: list[tuple[float, float]]) -> bool:
-    mid = (t_start + t_end) / 2
+def in_overlap(t_start: float, t_end: float, overlaps: list[tuple[float, float]], threshold_s: float = 0.3) -> bool:
+    """True ha a szegmens legalább threshold_s másodpercen átfed egy ismert overlap-zónával."""
     for os_, oe in overlaps:
-        if os_ <= mid <= oe:
+        ol = min(t_end, oe) - max(t_start, os_)
+        if ol >= threshold_s:
             return True
     return False
 
 
-# ── Átírás HuggingFace transformers pipeline-nal ─────────────────────────────
+def speaker_purity(seg_start: float, seg_end: float, diar_segs: list[dict]) -> tuple[str, float]:
+    """Visszaadja a domináns bemondót és a szegmens 'tisztaságát' (0–1).
 
-def transcribe_words(wav_path: Path) -> list[dict]:
-    """Visszaad [{word, start, end}, ...] listát szó-timestampekkel."""
+    Purity = a domináns bemondó által fedett arány a szegmens hosszához képest.
+    Ha pl. 60% Speaker_00 és 40% Speaker_01 → purity=0.60 → vegyes szegmens.
+    """
+    coverage: dict[str, float] = {}
+    for ds in diar_segs:
+        ol = min(seg_end, ds["end"]) - max(seg_start, ds["start"])
+        if ol > 0:
+            coverage[ds["speaker"]] = coverage.get(ds["speaker"], 0.0) + ol
+    if not coverage:
+        return "UNKNOWN", 0.0
+    total    = max(seg_end - seg_start, 1e-6)
+    best_spk = max(coverage, key=coverage.get)
+    return best_spk, coverage[best_spk] / total
+
+
+# ── Átírás HuggingFace transformers pipeline-nal (szegmens-szintű) ────────────
+
+def transcribe_segments(wav_path: Path) -> list[dict]:
+    """Visszaad [{text, start, end}, ...] listát valódi Whisper szegmens-timestampekkel.
+
+    A szegmens-szintű timestampek pontosak (Whisper valódi szüneteket detektál),
+    szemben a szó-szintű közelítéssel. A Whisper természetes mondathatáron zárja a
+    szegmenseket, így a darabolás pontosan ott vágja a hanganyagot.
+    """
     log(f"Átírás HF transformers pipeline-nal: {MODEL_PATH}")
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline as hf_pipeline
 
@@ -149,7 +175,6 @@ def transcribe_words(wav_path: Path) -> list[dict]:
         MODEL_PATH, cache_dir=CACHE_DIR, trust_remote_code=False
     )
 
-    # Maximálisan engedélyezett új tokenek kiszámítása
     max_target = getattr(getattr(model, "config", None), "max_target_positions", 448)
     try:
         forced = processor.get_decoder_prompt_ids(language="hu", task="transcribe")
@@ -170,8 +195,6 @@ def transcribe_words(wav_path: Path) -> list[dict]:
         stride_length_s=(2, 1),
     )
 
-    # return_timestamps=True → szegmens-szintű timestampek (stabil hosszú audión)
-    # A szavakat arányosan osztjuk el a szegmensen belül – elég pontosságú a daraboláshoz.
     out = asr(
         str(wav_path),
         return_timestamps=True,
@@ -182,139 +205,117 @@ def transcribe_words(wav_path: Path) -> list[dict]:
         },
     )
 
-    words = []
+    segments = []
+    prev_end = 0.0
     for seg in out.get("chunks") or []:
         txt = (seg.get("text") or "").strip()
         ts  = seg.get("timestamp")
-        if not txt or not isinstance(ts, (list, tuple)):
-            continue
-        if ts[0] is None:
+        if not txt or not isinstance(ts, (list, tuple)) or ts[0] is None:
             continue
         try:
             seg_s = float(ts[0])
             seg_e = float(ts[1]) if ts[1] is not None else seg_s + 5.0
         except Exception:
             continue
-        toks = [w for w in txt.split() if w.strip()]
-        if not toks:
-            continue
-        dur  = max(0.01, seg_e - seg_s)
-        step = dur / len(toks)
-        for i, w in enumerate(toks):
-            words.append({
-                "word":  w,
-                "start": seg_s + i * step,
-                "end":   seg_s + (i + 1) * step,
-            })
+        # Növekvő időrend és minimális hossz ellenőrzése
+        seg_s = max(seg_s, prev_end)
+        if seg_e <= seg_s:
+            seg_e = seg_s + 0.5
+        segments.append({"text": txt, "start": seg_s, "end": seg_e})
+        prev_end = seg_e
 
-    log(f"Átírás kész: {len(words)} szó ({len(out.get('chunks', []))} szegmens)")
-    return words
+    log(f"Átírás kész: {len(segments)} szegmens")
+    return segments
 
 
-# ── Szó → bemondó hozzárendelés ───────────────────────────────────────────────
+# ── Szegmens → bemondó hozzárendelés ─────────────────────────────────────────
 
-def assign_speakers(words: list[dict], segments: list[dict]) -> list[dict]:
-    """Minden szóhoz hozzárendeli a legtöbbet fedő diarizációs bemondót."""
+def assign_segment_speakers(
+    whisper_segs: list[dict],
+    diar_segs: list[dict],
+) -> list[dict]:
+    """Minden Whisper szegmenshez hozzárendeli a domináns bemondót és a purity értéket."""
     result = []
-    for w in words:
-        best_spk = "UNKNOWN"
-        best_overlap = 0.0
-        for seg in segments:
-            ol = min(w["end"], seg["end"]) - max(w["start"], seg["start"])
-            if ol > best_overlap:
-                best_overlap = ol
-                best_spk = seg["speaker"]
-        result.append({**w, "speaker": best_spk})
+    for ws in whisper_segs:
+        spk, purity = speaker_purity(ws["start"], ws["end"], diar_segs)
+        result.append({**ws, "speaker": spk, "purity": purity})
     return result
 
 
-# ── Mondathatáros csomagolás ~30s-os darabokba ───────────────────────────────
-
-def is_sentence_end(word: str, next_word: str | None, gap: float) -> bool:
-    if SENTENCE_END.search(word):
-        return True
-    if gap > 1.5:
-        return True
-    return False
-
+# ── Szegmens-alapú csomagolás ~30s-os darabokba ──────────────────────────────
 
 def pack_chunks(
-    words: list[dict],
+    segments: list[dict],
     overlaps: list[tuple[float, float]],
     skip_overlap: bool,
 ) -> list[dict]:
-    """
-    Mondathatáros csomagolás.
-    Visszaad [{speaker, start, end, words: [...]}, ...] listát.
+    """Whisper szegmenseket pakol ~TARGET_MIN–TARGET_MAX s-os darabokba.
+
+    A vágás pontosan a szegmens végén történik (valódi audio-határ),
+    így az audio és a szöveg mindig szinkronban marad.
     """
     chunks = []
-    buf_words = []
-    buf_start = None
-    buf_speaker = None
+    buf_segs: list[dict] = []
+    buf_start: float | None = None
+    buf_speaker: str | None = None
 
-    def flush(buf_words, buf_start, buf_speaker):
-        if not buf_words:
+    def flush() -> dict | None:
+        if not buf_segs:
             return None
-        text = " ".join(w["word"] for w in buf_words).strip()
+        text = " ".join(s["text"] for s in buf_segs).strip()
         return {
             "speaker": buf_speaker,
-            "start": buf_start,
-            "end": buf_words[-1]["end"],
-            "text": text,
-            "word_count": len(buf_words),
+            "start":   buf_start,
+            "end":     buf_segs[-1]["end"],
+            "text":    text,
         }
 
-    for i, w in enumerate(words):
-        # Átfedő részt kihagyjuk ha kérték
-        if skip_overlap and in_overlap(w["start"], w["end"], overlaps):
-            if buf_words:
-                ch = flush(buf_words, buf_start, buf_speaker)
-                if ch:
-                    chunks.append(ch)
-                buf_words, buf_start, buf_speaker = [], None, None
+    for seg in segments:
+        # Átfedő zónával való ütközés VAGY alacsony speaker-tisztaság → kihagyás
+        if skip_overlap and (
+            in_overlap(seg["start"], seg["end"], overlaps)
+            or seg.get("purity", 1.0) < MIN_PURITY
+        ):
+            ch = flush()
+            if ch:
+                chunks.append(ch)
+            buf_segs, buf_start, buf_speaker = [], None, None
             continue
 
-        # Bemondóváltás → mindenképp új chunk
-        if buf_speaker and w["speaker"] != buf_speaker and buf_words:
-            ch = flush(buf_words, buf_start, buf_speaker)
+        # Bemondóváltás → új chunk
+        if buf_speaker and seg["speaker"] != buf_speaker and buf_segs:
+            ch = flush()
             if ch:
                 chunks.append(ch)
-            buf_words, buf_start, buf_speaker = [], None, None
+            buf_segs, buf_start, buf_speaker = [], None, None
 
-        if not buf_words:
-            buf_start = w["start"]
-            buf_speaker = w["speaker"]
+        if not buf_segs:
+            buf_start  = seg["start"]
+            buf_speaker = seg["speaker"]
 
-        buf_words.append(w)
-        dur = w["end"] - buf_start
-
-        # Következő szó gapje
-        next_w = words[i + 1] if i + 1 < len(words) else None
-        gap = (next_w["start"] - w["end"]) if next_w else 99.0
-
-        sent_end = is_sentence_end(w["word"], next_w["word"] if next_w else None, gap)
+        buf_segs.append(seg)
+        dur      = seg["end"] - buf_start
+        sent_end = bool(SENTENCE_END.search(seg["text"]))
 
         if dur >= HARD_MAX_S:
-            # Abszolút max elérve
-            ch = flush(buf_words, buf_start, buf_speaker)
+            ch = flush()
             if ch:
                 chunks.append(ch)
-            buf_words, buf_start, buf_speaker = [], None, None
+            buf_segs, buf_start, buf_speaker = [], None, None
         elif dur >= TARGET_MAX_S and sent_end:
-            ch = flush(buf_words, buf_start, buf_speaker)
+            ch = flush()
             if ch:
                 chunks.append(ch)
-            buf_words, buf_start, buf_speaker = [], None, None
+            buf_segs, buf_start, buf_speaker = [], None, None
         elif dur >= TARGET_MIN_S and sent_end:
-            ch = flush(buf_words, buf_start, buf_speaker)
+            ch = flush()
             if ch:
                 chunks.append(ch)
-            buf_words, buf_start, buf_speaker = [], None, None
+            buf_segs, buf_start, buf_speaker = [], None, None
 
-    if buf_words:
-        ch = flush(buf_words, buf_start, buf_speaker)
-        if ch:
-            chunks.append(ch)
+    ch = flush()
+    if ch:
+        chunks.append(ch)
 
     return chunks
 
@@ -422,18 +423,21 @@ def main():
     overlap_total = sum(e - s for s, e in overlaps)
     log(f"Átfedő szakaszok: {len(overlaps)} db, összesen {overlap_total:.1f}s")
 
-    # 4. Átírás szó-timestampekkel
-    words = transcribe_words(wav_path)
-    if not words:
-        log("HIBA: Nincsenek szavak az átírásban.")
+    # 4. Átírás szegmens-timestampekkel
+    whisper_segs = transcribe_segments(wav_path)
+    if not whisper_segs:
+        log("HIBA: Nincsenek szegmensek az átírásban.")
         sys.exit(1)
 
-    # 5. Bemondó hozzárendelés
-    words = assign_speakers(words, diar_segments)
+    # 5. Bemondó hozzárendelés szegmensenként
+    whisper_segs = assign_segment_speakers(whisper_segs, diar_segments)
 
-    # 6. Mondathatáros csomagolás
-    log("\nMondathatáros csomagolás...")
-    chunks = pack_chunks(words, overlaps, skip_overlap)
+    # 6. Szegmens-alapú csomagolás
+    log("\nSzegmens-alapú csomagolás...")
+    if skip_overlap:
+        mixed = sum(1 for s in whisper_segs if s.get("purity", 1.0) < MIN_PURITY)
+        log(f"  Vegyes bemondójú szegmensek (purity < {MIN_PURITY:.0%}): {mixed} db kihagyva")
+    chunks = pack_chunks(whisper_segs, overlaps, skip_overlap)
     log(f"Létrehozott chunk-ok: {len(chunks)}")
 
     total_dur = sum(ch["end"] - ch["start"] for ch in chunks)
@@ -446,10 +450,11 @@ def main():
     # 8. Statisztika
     durations = [m["duration_s"] for m in manifest]
     log(f"\n=== Összefoglaló ===")
-    log(f"Chunkok száma:     {len(manifest)}")
-    log(f"Össz tanítóadat:   {sum(durations)/60:.1f} perc")
-    log(f"Átlagos hossz:     {sum(durations)/len(durations):.1f}s" if durations else "")
-    log(f"Kihagyott overlap: {overlap_total:.1f}s")
+    log(f"Chunkok száma:      {len(manifest)}")
+    log(f"Össz tanítóadat:    {sum(durations)/60:.1f} perc")
+    log(f"Átlagos hossz:      {sum(durations)/len(durations):.1f}s" if durations else "")
+    log(f"Max chunk hossz:    {max(durations):.1f}s (limit: {HARD_MAX_S}s)" if durations else "")
+    log(f"Kihagyott overlap:  {overlap_total:.1f}s (pyannote)")
     log(f"\nKövetkezó lépés: javítsd a .txt fájlokat, majd:")
     log(f"  python diar_batch_import.py --dir {out_dir}")
 

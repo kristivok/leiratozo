@@ -119,16 +119,23 @@
         .log-box .log-ok    { color: #4caf50; font-weight: bold; }
 
         /* Data table */
-        .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .data-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
         .data-table th { background: #f1f3f5; color: #555; padding: 7px 10px;
                          text-align: left; border-bottom: 2px solid #dee2e6; }
-        .data-table td { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; color: #444; vertical-align: top; }
+        .data-table td { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; color: #444;
+                         vertical-align: middle; overflow: hidden; }
         .data-table tr:hover td { background: #fafafa; }
+        .data-table col.col-id     { width: 36px; }
+        .data-table col.col-date   { width: 96px; }
+        .data-table col.col-dur    { width: 48px; }
+        .data-table col.col-text   { width: auto; }
+        .data-table col.col-status { width: 90px; }
+        .data-table col.col-acts   { width: 90px; }
         .tag-used   { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px;
                       background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
         .tag-unused { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px;
                       background: #fff3e0; color: #e65100; border: 1px solid #ffcc80; }
-        .transcript-preview { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .transcript-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
         /* Runs table */
         .runs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -514,30 +521,89 @@ async function loadData() {
     }
     const rows = d.items.map(it => {
         const tag = it.used
-            ? `<span class="tag-used">tanítva: #${it.used}</span>`
-            : `<span class="tag-unused">még nem tanítva</span>`;
-        const del = `<button class="btn btn-red btn-sm" onclick="deleteSample(${it.id})">Törlés</button>`;
-        const preview = it.transcript.length > 80
-            ? esc(it.transcript.substring(0, 78)) + '…'
-            : esc(it.transcript);
+            ? `<span class="tag-used">#${it.used}</span>`
+            : `<span class="tag-unused">–</span>`;
+        const preview = esc(it.transcript.substring(0, 38)) + (it.transcript.length > 38 ? '…' : '');
         const audioLink = `<a href="/finetune/audio/${encodeURIComponent(it.audio_fn)}"
-            download="${esc(it.audio_fn)}" class="btn btn-blue btn-sm" title="Hanganyag letöltése">▼ Hang</a>`;
-        return `<tr>
+            download="${esc(it.audio_fn)}" class="btn btn-blue btn-sm" title="Hanganyag letöltése">▼</a>`;
+        return `
+        <tr onclick="tdToggleEdit(${it.id})" style="cursor:pointer" title="Kattints a leirat szerkesztéséhez">
             <td>${it.id}</td>
-            <td>${fmtDt(it.uploaded_at)}</td>
+            <td style="font-size:12px">${fmtDt(it.uploaded_at)}</td>
             <td>${it.duration_s}s</td>
-            <td class="transcript-preview" title="${esc(it.transcript)}">${preview}</td>
+            <td class="transcript-preview" id="tdPrev_${it.id}" title="${esc(it.transcript)}">${preview}</td>
             <td>${tag}</td>
-            <td style="white-space:nowrap">${audioLink} ${del}</td>
+            <td onclick="event.stopPropagation()" style="white-space:nowrap">
+                ${audioLink}
+                <button class="btn btn-red btn-sm" onclick="deleteSample(${it.id})">✕</button>
+            </td>
+        </tr>
+        <tr id="tdEdit_${it.id}" style="display:none; background:#f8f9ff;">
+            <td colspan="6" style="padding:10px 14px; overflow:visible;">
+                <div style="font-size:12px;color:#888;margin-bottom:5px;">Leirat szerkesztése (#${it.id})</div>
+                <textarea id="tdTxt_${it.id}" rows="3"
+                    style="width:100%;padding:7px 9px;font-size:13px;border:1px solid #90caf9;
+                           border-radius:6px;font-family:inherit;resize:vertical;box-sizing:border-box;"
+                >${esc(it.transcript)}</textarea>
+                <div style="display:flex;gap:8px;margin-top:7px;align-items:center;">
+                    <button class="btn btn-green btn-sm" onclick="saveTranscript(${it.id})">Mentés</button>
+                    <button class="btn btn-sm" style="background:#eee;color:#555;"
+                        onclick="tdToggleEdit(${it.id})">Mégse</button>
+                    <span id="tdSaveMsg_${it.id}" style="font-size:12px;"></span>
+                </div>
+            </td>
         </tr>`;
     }).join('');
     el.innerHTML = `<table class="data-table">
+        <colgroup>
+            <col class="col-id"><col class="col-date"><col class="col-dur">
+            <col class="col-text"><col class="col-status"><col class="col-acts">
+        </colgroup>
         <thead><tr>
             <th>#</th><th>Feltöltve</th><th>Hossz</th>
-            <th>Leirat</th><th>Státusz</th><th></th>
+            <th>Leirat</th><th>Tanítva</th><th></th>
         </tr></thead>
         <tbody>${rows}</tbody>
     </table>`;
+}
+
+function tdToggleEdit(id) {
+    const editRow = document.getElementById(`tdEdit_${id}`);
+    const isOpen  = editRow.style.display !== 'none';
+    // Bezárja az összes többi nyitott szerkesztőt
+    document.querySelectorAll('[id^="tdEdit_"]').forEach(r => r.style.display = 'none');
+    if (!isOpen) {
+        editRow.style.display = '';
+        document.getElementById(`tdTxt_${id}`).focus();
+    }
+}
+
+async function saveTranscript(id) {
+    const text = document.getElementById(`tdTxt_${id}`).value.trim();
+    const msg  = document.getElementById(`tdSaveMsg_${id}`);
+    if (!text) { msg.innerHTML = '<span style="color:#c62828">Nem lehet üres.</span>'; return; }
+
+    msg.innerHTML = '<span style="color:#888">Mentés…</span>';
+    const d = await fetch(`/finetune/data/${id}/edit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transcript: text }),
+    }).then(r => r.json());
+
+    if (d.error) {
+        msg.innerHTML = `<span style="color:#c62828">${esc(d.error)}</span>`;
+    } else {
+        msg.innerHTML = '<span style="color:#2e7d32">✓ Elmentve</span>';
+        // Előnézet frissítése a táblázatban
+        const prev = document.getElementById(`tdPrev_${id}`);
+        if (prev) {
+            prev.title = text;
+            prev.textContent = text.length > 80 ? text.substring(0, 78) + '…' : text;
+        }
+        setTimeout(() => {
+            document.getElementById(`tdEdit_${id}`).style.display = 'none';
+        }, 800);
+    }
 }
 
 async function deleteSample(id) {
