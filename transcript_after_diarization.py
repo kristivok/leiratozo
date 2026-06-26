@@ -43,9 +43,13 @@ GENERATE_KWARGS = {
     "num_beams": _num_beams,
     "do_sample": False,
     "temperature": 0.0,
-    "no_repeat_ngram_size": 3,
+    "no_repeat_ngram_size": 5,   # 3 → 5: karakterszintű ismétlési hurkokat is megakadályoz
+    "repetition_penalty": 1.3,   # ismétlődő tokenek büntetése (1.0 = nincs büntetés)
     "max_new_tokens": 444,
 }
+
+# Ennél rövidebb szegmenseket Whisper nem tud megbízhatóan átírni – hallucinál helyette
+MIN_SEGMENT_S = 2.5
 
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -59,6 +63,27 @@ torch.set_flush_denormal(True)
 
 
 def log(msg): print(msg, flush=True)
+
+
+def clean_hallucination(text: str) -> str:
+    """Levágja a Whisper ismétlési hurkait a szöveg végéről.
+
+    Két mintát keres:
+    - Karakterszintű hurok: ugyanaz a 2-8 karakteres részlet 4+ egymás utáni ismétlése
+      pl. "vívívívíviv", "árárárárárár", "kikikiki"
+    - Szószintű hurok: rövid szó (1-3 kar) 4+ egymás utáni ismétlése
+      pl. "k k k k k", "vá vá vá vá"
+    """
+    import re
+    # Karakterszintű: ".{2,8}" minta 4x+ egymás után
+    m = re.search(r'(.{2,8})\1{3,}', text)
+    if m:
+        text = text[:m.start()].rstrip(' ,.:;')
+    # Szószintű: rövid szó 4x+ egymás után (szóközökkel)
+    m = re.search(r'\b(\w{1,3})\b(?:\s+\1\b){3,}', text, re.IGNORECASE)
+    if m:
+        text = text[:m.start()].rstrip(' ,.:;')
+    return text.strip()
 
 
 # ── Diarizáció feldolgozása ───────────────────────────────────────────────────
@@ -206,24 +231,39 @@ def transcribe_turns(turns, audio_file):
 
     log(f"Turn-ök numpy array-be konvertálása ({len(turns)} db)...")
     inputs = []
+    skipped_short = 0
     for turn in turns:
+        dur = turn["end"] - turn["start"]
+        if dur < MIN_SEGMENT_S:
+            inputs.append(None)  # helykitöltő – az outputs lista indexe egyezzen
+            skipped_short += 1
+            continue
         start_ms = int(turn["start"] * 1000)
-        end_ms = int(turn["end"] * 1000)
-        chunk = full_audio[start_ms:end_ms]
-        samples = np.array(chunk.get_array_of_samples(), dtype=np.float32) / 32768.0
+        end_ms   = int(turn["end"] * 1000)
+        chunk    = full_audio[start_ms:end_ms]
+        samples  = np.array(chunk.get_array_of_samples(), dtype=np.float32) / 32768.0
         inputs.append({"array": samples, "sampling_rate": 16000})
+    if skipped_short:
+        log(f"  Kihagyva (< {MIN_SEGMENT_S}s): {skipped_short} turn")
+
+    # Csak a nem-None inputokat küldjük az ASR-nek, de az indexet megőrizzük
+    active_idx  = [i for i, x in enumerate(inputs) if x is not None]
+    active_inputs = [inputs[i] for i in active_idx]
 
     asr, model, processor = _load_trendency_pipeline()
-    log(f"Batch ASR futtatása ({len(inputs)} turn, batch_size={ASR_BATCH_SIZE}, num_beams={_num_beams})...")
-    outputs = []
+    log(f"Batch ASR futtatása ({len(active_inputs)}/{len(inputs)} turn, "
+        f"batch_size={ASR_BATCH_SIZE}, num_beams={_num_beams})...")
+    asr_results = {}  # index → {"text": ...}
     try:
-        for i in range(0, len(inputs), ASR_BATCH_SIZE):
-            batch = inputs[i:i + ASR_BATCH_SIZE]
+        for i in range(0, len(active_inputs), ASR_BATCH_SIZE):
+            batch     = active_inputs[i:i + ASR_BATCH_SIZE]
+            batch_idx = active_idx[i:i + ASR_BATCH_SIZE]
             batch_out = list(asr(batch, return_timestamps=False, generate_kwargs=GENERATE_KWARGS))
-            outputs.extend(batch_out)
-            done = min(i + ASR_BATCH_SIZE, len(inputs))
-            print(f"PROGRESS: {done}/{len(inputs)}", flush=True)
-            log(f"  {done}/{len(inputs)} turn kész")
+            for orig_i, out in zip(batch_idx, batch_out):
+                asr_results[orig_i] = out
+            done = min(i + ASR_BATCH_SIZE, len(active_inputs))
+            print(f"PROGRESS: {done}/{len(active_inputs)}", flush=True)
+            log(f"  {done}/{len(active_inputs)} turn kész")
     finally:
         del asr, model, processor
         if torch.cuda.is_available():
@@ -231,12 +271,19 @@ def transcribe_turns(turns, audio_file):
             log("GPU cache törölve.")
 
     results = []
-    for turn, out in zip(turns, outputs):
+    for idx, (turn, inp) in enumerate(zip(turns, inputs)):
+        if inp is None:
+            # Rövid szegmens: üres szöveg, de megőrizzük a metaadatot
+            text = ""
+        else:
+            out  = asr_results.get(idx, {})
+            text = (out.get("text", "") or "").strip()
+        text = clean_hallucination(text)
         r = {
             "speaker": turn["speaker"],
             "start": turn["start"],
             "end": turn["end"],
-            "text": (out.get("text", "") or "").strip(),
+            "text": text,
         }
         for k, v in turn.items():
             if k.startswith("_"):

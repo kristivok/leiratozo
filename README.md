@@ -65,10 +65,14 @@ diarization_result.json
       │
       ▼  transcribe_turns()  [batch ASR]
          audio.wav egyszer betöltve memóriába
+         < 2,5s turn-ök kihagyva (Whisper hallucinál rövid audión)
          Minden chunk → numpy array (16kHz float32)
          GPU batch: ASR_BATCH_SIZE chunk egyszerre
-         GENERATE_KWARGS: language=hu, num_beams, max_new_tokens=444
+         GENERATE_KWARGS: language=hu, num_beams,
+           no_repeat_ngram_size=5, repetition_penalty=1.3,
+           max_new_tokens=444
          → PROGRESS: X/Y stdout-ra (batch-onként)
+         clean_hallucination() – ismétlési hurkok levágása
       │
       ▼  merge_sub_chunks()
          A split_long_turns által feldarabolt részek
@@ -83,6 +87,8 @@ final_text_TIMESTAMP.txt
 - Az `audio.wav` egyszer töltődik be memóriába; nincs per-turn lemez I/O.
 - `max_new_tokens=444` – Whisper belső korlátja (`max_target_positions=448`, 4 decoder prompt token foglalt).
 - A pipeline-ban nincs `chunk_length_s` – a `split_long_turns` garantálja, hogy minden chunk ≤ 25s.
+- **Rövid szegmens szűrés** (`MIN_SEGMENT_S = 2.5`): ennél rövidebb turn-re Whisper nem fut – a modell rövid audión hallucinál (ismétlődő szótagok, értelmetlen karaktersorozatok).
+- **Ismétlési hurok szűrés** (`clean_hallucination()`): a Whisper dekódoló néha hurokba kerül hosszú szegmensek végén. A függvény regex alapján keresi a 2-8 karakteres részletek 4×+ egymás utáni ismétlését, és ott csonkítja a szöveget. `no_repeat_ngram_size=5` és `repetition_penalty=1.3` csökkentik az előfordulást.
 
 ---
 
@@ -723,6 +729,12 @@ sqlite3 logs/transcriber.db "UPDATE queue SET status='pending' WHERE status='run
 
 **Hiányzó szöveg hosszú turn-öknél**
 - Whisper maximális ablaka 30 mp. A `split_long_turns()` (25 mp-es határ) ezt automatikusan kezeli – ha régebbi futásnál merült fel, az újrafuttatás javítja.
+
+**Üres szegmens a kimenetben**
+- A 2,5 mp-nél rövidebb turn-ök szándékosan üresek – Whisper ezeken hallucinál. Jellemzően rövid visszajelzések (`Igen`, `Értem`, `Jó`) esnek ki.
+
+**Szöveg közepén csonkított mondat**
+- A `clean_hallucination()` levágta az ismétlési hurkot. Az előtte lévő szövegrész helyes, a hiányzó rész az audión valószínűleg homályos/zajos volt.
 
 **Finomhangolás: `No module named 'peft'`**
 ```bash
