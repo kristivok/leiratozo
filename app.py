@@ -607,7 +607,9 @@ def _ft_init_db():
         used_in_run INTEGER DEFAULT 0
     )""")
     # Minőség-osztályozáshoz: forrás (túlreprezentáció) + modell-audit eredmények
-    for col in ("source TEXT", "audit_wer REAL", "audit_loss REAL", "audit_at TEXT"):
+    # + quality_ok: kézzel jónak jelölt minta (felülírja az automatikus besorolást, túléli az auditot)
+    for col in ("source TEXT", "audit_wer REAL", "audit_loss REAL", "audit_at TEXT",
+                "quality_ok INTEGER DEFAULT 0"):
         try:
             c.execute(f"ALTER TABLE training_data ADD COLUMN {col}")
         except sqlite3.OperationalError:
@@ -945,13 +947,13 @@ def finetune_data():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("""SELECT id, audio_fn, transcript, uploaded_at, duration_s, used_in_run,
-                        source, audit_wer, audit_loss
+                        source, audit_wer, audit_loss, quality_ok
                  FROM training_data ORDER BY id DESC""")
     rows = c.fetchall()
     conn.close()
     items = []
     for r in rows:
-        q = training_quality.classify(r[2], r[4], r[7], r[8])
+        q = training_quality.classify(r[2], r[4], r[7], r[8], quality_ok=bool(r[9]))
         items.append({
             "id": r[0], "audio_fn": r[1],
             "transcript": r[2], "uploaded_at": r[3],
@@ -959,7 +961,10 @@ def finetune_data():
             "used": bool(r[5]),
             "source": r[6] or "",
             "quality": q["label"], "reasons": q["reasons"],
+            "verified": bool(r[9]),
             "audited": r[7] is not None,
+            "audit_wer": round(r[7], 3) if r[7] is not None else None,
+            "audit_loss": round(r[8], 3) if r[8] is not None else None,
         })
     return jsonify({"items": items})
 
@@ -1058,6 +1063,22 @@ def finetune_edit(item_id):
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+
+@app.route("/finetune/data/<int:item_id>/quality-ok", methods=["POST"])
+def finetune_quality_ok(item_id):
+    """Kézzel 'jónak' jelöli (vagy visszaveszi) a mintát. A jelölés felülírja az automatikus
+    besorolást (heurisztika ÉS audit), és a következő audit után is megmarad."""
+    ok = bool((request.json or {}).get("ok", True))
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE training_data SET quality_ok=? WHERE id=?", (1 if ok else 0, item_id))
+    rc = c.rowcount
+    conn.commit()
+    conn.close()
+    if rc == 0:
+        return jsonify({"error": "Nem található."})
+    return jsonify({"ok": True, "quality_ok": ok})
 
 
 @app.route("/finetune/data/<int:item_id>/delete", methods=["POST"])
@@ -1683,7 +1704,7 @@ def finetune_quality():
     _ensure_sources_backfilled()
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    rows = c.execute("""SELECT id, audio_fn, transcript, duration_s, source, audit_wer, audit_loss
+    rows = c.execute("""SELECT id, audio_fn, transcript, duration_s, source, audit_wer, audit_loss, quality_ok
                         FROM training_data ORDER BY id DESC""").fetchall()
     conn.close()
 
@@ -1701,7 +1722,7 @@ def finetune_quality():
     src_agg   = {}
 
     for r in rows:
-        rid, fn, txt, dur, source, awer, aloss = r
+        rid, fn, txt, dur, source, awer, aloss, qok = r
         dur = dur or 0
         total_min += dur
         if awer is not None:
@@ -1711,15 +1732,16 @@ def finetune_quality():
         agg["count"] += 1
         agg["sec"]   += dur
 
-        q = training_quality.classify(txt, dur, awer, aloss)
+        q = training_quality.classify(txt, dur, awer, aloss, quality_ok=bool(qok))
         label, reasons = q["label"], list(q["reasons"])
 
-        # Duplikátum → legalább 'warn'
-        key = training_quality.norm_key(txt or "")
-        if key and dup_count.get(key, 0) > 1:
-            reasons.append(f"duplikátum ({dup_count[key]}× ugyanaz a szöveg)")
-            if label == "ok":
-                label = "warn"
+        # Duplikátum → legalább 'warn' (de a kézzel jónak jelöltet nem írja felül)
+        if not qok:
+            key = training_quality.norm_key(txt or "")
+            if key and dup_count.get(key, 0) > 1:
+                reasons.append(f"duplikátum ({dup_count[key]}× ugyanaz a szöveg)")
+                if label == "ok":
+                    label = "warn"
 
         counts[label] += 1
         if label != "ok":

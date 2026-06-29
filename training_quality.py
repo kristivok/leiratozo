@@ -70,8 +70,12 @@ def detect_repetition(text: str):
     return None
 
 
-def classify(text: str, duration_s, audit_wer=None, audit_loss=None) -> dict:
-    """Egy minta osztályozása. Visszaad: {label, reasons[], cps}."""
+def classify(text: str, duration_s, audit_wer=None, audit_loss=None, quality_ok=False) -> dict:
+    """Egy minta osztályozása. Visszaad: {label, reasons[], cps, verified}.
+
+    quality_ok=True → a felhasználó kézzel jónak jelölte: felülírja az automatikus besorolást
+    (heurisztika ÉS audit), és a következő audit után is ✅ marad.
+    """
     text = text or ""
     try:
         dur = float(duration_s or 0)
@@ -79,6 +83,9 @@ def classify(text: str, duration_s, audit_wer=None, audit_loss=None) -> dict:
         dur = 0.0
     n   = len(_norm_text(text))
     cps = (n / dur) if dur > 0 else 0.0
+
+    if quality_ok:
+        return {"label": "ok", "reasons": ["kézzel jónak jelölve"], "cps": round(cps, 1), "verified": True}
 
     bad, warn = [], []
 
@@ -131,7 +138,7 @@ def classify(text: str, duration_s, audit_wer=None, audit_loss=None) -> dict:
             warn.append(f"emelt loss ({audit_loss:.2f})")
 
     label = "bad" if bad else ("warn" if warn else "ok")
-    return {"label": label, "reasons": bad + warn, "cps": round(cps, 1)}
+    return {"label": label, "reasons": bad + warn, "cps": round(cps, 1), "verified": False}
 
 
 def wer(reference: str, hypothesis: str) -> float:

@@ -161,8 +161,8 @@
         .data-table col.col-dur    { width: 48px; }
         .data-table col.col-text   { width: auto; }
         .data-table col.col-qual   { width: 84px; }
-        .data-table col.col-status { width: 70px; }
-        .data-table col.col-acts   { width: 90px; }
+        .data-table col.col-status { width: 60px; }
+        .data-table col.col-acts   { width: 118px; }
         .tag-used   { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px;
                       background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
         .tag-unused { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px;
@@ -436,6 +436,13 @@
 <!-- ── Tanítóadatok táblázata ── -->
 <div class="card">
     <h2>Feltöltött tanítóadatok</h2>
+    <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+        <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+            <input type="checkbox" id="dataFlaggedOnly" onchange="loadData()">
+            Csak a megjelöltek (⛔/⚠)
+        </label>
+        <span id="dataFilterInfo" style="font-size:12px; color:#888;"></span>
+    </div>
     <div id="dataTableWrap" class="data-scroll-wrap">
         <em style="color:#999; font-size:13px; padding:8px 12px; display:block">Betöltés…</em>
     </div>
@@ -603,24 +610,60 @@ async function loadData() {
     const el = document.getElementById('dataTableWrap');
     if (!d.items || d.items.length === 0) {
         el.innerHTML = '<em style="color:#999; font-size:13px">Még nincs feltöltött tanítóadat.</em>';
+        document.getElementById('dataFilterInfo').textContent = '';
         return;
     }
-    const rows = d.items.map(it => {
+
+    // Szűrés: csak a megjelöltek (⛔/⚠, a kézzel jónak jelöltek nem)
+    const flaggedOnly  = document.getElementById('dataFlaggedOnly')?.checked;
+    const flaggedCount = d.items.filter(it => it.quality !== 'ok').length;
+    const items = flaggedOnly ? d.items.filter(it => it.quality !== 'ok') : d.items;
+    document.getElementById('dataFilterInfo').textContent = flaggedOnly
+        ? `${items.length} megjelölt minta`
+        : `${d.items.length} minta · ${flaggedCount} megjelölt`;
+
+    if (items.length === 0) {
+        el.innerHTML = '<em style="color:#2e7d32; font-size:13px; padding:8px 12px; display:block">Nincs megjelölt (gyanús / ártó) minta. 👍</em>';
+        return;
+    }
+
+    const rows = items.map(it => {
         const tag = it.used
             ? `<span class="tag-used">#${it.used}</span>`
             : `<span class="tag-unused">–</span>`;
         const preview = esc(it.transcript.substring(0, 38)) + (it.transcript.length > 38 ? '…' : '');
         const audioLink = `<a href="/finetune/audio/${encodeURIComponent(it.audio_fn)}"
             download="${esc(it.audio_fn)}" class="btn btn-blue btn-sm" title="Hanganyag letöltése">▼</a>`;
+
+        // Az indok ("log") a mintánál, közvetlenül a leirat alatt – nem külön helyen
+        const auditBits = [];
+        if (it.audit_wer  != null) auditBits.push(`WER ${Math.round(it.audit_wer*100)}%`);
+        if (it.audit_loss != null) auditBits.push(`loss ${it.audit_loss}`);
+        const auditStr = auditBits.length ? ` (${auditBits.join(', ')})` : '';
+        const flagReasons = (it.quality !== 'ok' && !it.verified && it.reasons && it.reasons.length)
+            ? `<div style="font-size:11px;color:#c0392b;margin-top:2px;white-space:normal;line-height:1.3;">${esc(it.reasons.join(' · '))}${auditStr}</div>`
+            : '';
+
+        // Soronkénti címke-javítás: kézzel jó / vissza auto
+        const verifyBtn = it.verified
+            ? `<button class="btn btn-sm" style="background:#fff3e0;color:#e65100" onclick="qSetVerified(${it.id}, false)" title="Vissza az automatikus besorolásra">↩</button>`
+            : `<button class="btn btn-sm" style="background:#e8f5e9;color:#2e7d32" onclick="qSetVerified(${it.id}, true)" title="Kézzel jónak jelölés (címke levétele) – a következő audit után sem jelöli újra">✓</button>`;
+
         return `
         <tr onclick="tdToggleEdit(${it.id})" style="cursor:pointer" title="Kattints a leirat szerkesztéséhez">
             <td>${it.id}</td>
             <td style="font-size:12px">${fmtDt(it.uploaded_at)}</td>
             <td>${it.duration_s}s</td>
-            <td class="transcript-preview" id="tdPrev_${it.id}" title="${esc(it.transcript)}">${preview}</td>
-            <td>${qBadge(it.quality, it.reasons)}</td>
+            <td>
+                <div class="transcript-preview" id="tdPrev_${it.id}" title="${esc(it.transcript)}">${preview}</div>
+                ${flagReasons}
+            </td>
+            <td>${it.verified
+                ? `<span class="q-badge q-ok" title="kézzel jónak jelölve">✓ ellenőrizve</span>`
+                : qBadge(it.quality, it.reasons)}</td>
             <td>${tag}</td>
             <td onclick="event.stopPropagation()" style="white-space:nowrap">
+                ${verifyBtn}
                 ${audioLink}
                 <button class="btn btn-red btn-sm" onclick="deleteSample(${it.id})">✕</button>
             </td>
@@ -637,6 +680,11 @@ async function loadData() {
                     <button class="btn btn-green btn-sm" onclick="saveTranscript(${it.id})">Mentés (szöveg + vágás)</button>
                     <button class="btn btn-sm" style="background:#eee;color:#555;"
                         onclick="tdToggleEdit(${it.id})">Mégse</button>
+                    ${it.verified
+                        ? `<button class="btn btn-sm" style="background:#fff3e0;color:#e65100"
+                              onclick="qSetVerified(${it.id}, false)" title="Vissza az automatikus besorolásra">↩ Auto-besorolás</button>`
+                        : `<button class="btn btn-sm" style="background:#e8f5e9;color:#2e7d32"
+                              onclick="qSetVerified(${it.id}, true)" title="Kézzel jónak jelölés – audit után sem jelöli újra">✓ Jónak jelölés</button>`}
                     <span id="tdSaveMsg_${it.id}" style="font-size:12px;"></span>
                 </div>
             </td>
@@ -663,7 +711,23 @@ function qBadge(quality, reasons) {
     return `<span class="q-badge q-ok" title="rendben">✅ jó</span>`;
 }
 
+// Kézzel 'jónak' jelöli a mintát (vagy visszaveszi). Felülírja az automatikus besorolást,
+// és a következő audit után is megmarad.
+async function qSetVerified(id, ok) {
+    let d;
+    try {
+        d = await fetch(`/finetune/data/${id}/quality-ok`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ok }),
+        }).then(r => r.json());
+    } catch (e) { alert('Hálózati hiba.'); return; }
+    if (d.error) { alert(d.error); return; }
+    loadData();
+    loadQuality();
+}
+
 let _qAuditTimer = null;
+let _qAuditPolling = false;   // fut-e már az audit-log pollozó (hogy frissítéskor ne induljon duplán)
 
 async function loadQuality() {
     let d;
@@ -706,33 +770,32 @@ async function loadQuality() {
     document.getElementById('qAuditInfo').textContent =
         s.audit_running ? 'Audit fut…' : (s.audited ? `${s.audited} minta auditálva` : 'Még nem futott audit');
 
-    // Megjelölt minták
-    const fw = document.getElementById('qFlaggedWrap');
-    if (d.flagged && d.flagged.length) {
-        const rows = d.flagged.map(f => {
-            const extra = [];
-            if (f.audit_wer  != null) extra.push(`WER ${Math.round(f.audit_wer*100)}%`);
-            if (f.audit_loss != null) extra.push(`loss ${f.audit_loss}`);
-            const extraTxt = extra.length ? ` <span style="color:#999">(${extra.join(', ')})</span>` : '';
-            return `<div style="padding:7px 0;border-bottom:1px solid #f2f2f2;font-size:12px;">
-                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                    ${qBadge(f.quality, f.reasons)}
-                    <span style="color:#888">#${f.id}</span>
-                    <span style="color:#666">${f.duration_s}s · cps ${f.cps}</span>
-                    <span style="color:#999;font-size:11px" title="${esc(f.source)}">${esc(f.source)}</span>
-                    <button class="btn btn-red btn-sm" style="margin-left:auto"
-                        onclick="deleteSample(${f.id})" title="Minta törlése">✕</button>
-                </div>
-                <div style="color:#c0392b;margin-top:2px">${esc(f.reasons.join(' · '))}${extraTxt}</div>
-                <div style="color:#555;margin-top:2px">„${esc(f.preview)}"</div>
-            </div>`;
-        }).join('');
-        fw.innerHTML = `<div style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">
-            Megjelölt minták (${d.flagged.length}) – nézd át / töröld a tényleg rosszakat</div>
-            <div class="data-scroll-wrap" style="max-height:360px;overflow-y:auto;padding:0 4px;">${rows}</div>`;
-    } else {
-        fw.innerHTML = `<div style="font-size:12px;color:#2e7d32">Nincs megjelölt (gyanús vagy ártó) minta. 👍</div>`;
+    // Ha épp fut egy audit (akár más munkamenetből / oldalfrissítés után), mutassuk a logot
+    // és kövessük élőben – ahogy a finetune terminálnál is.
+    if (s.audit_running) {
+        document.getElementById('qAuditBtn').disabled = true;
+        document.getElementById('qAuditLog').style.display = 'block';
+        if (!_qAuditPolling) qPollAudit();
     }
+
+    // Megjelölt minták: a részletek (indok/log + javítás) a "Feltöltött tanítóadatok"
+    // táblában vannak az egyes mintáknál – itt csak egy rövid mutató + odaugró gomb.
+    const fw = document.getElementById('qFlaggedWrap');
+    const n = (d.flagged && d.flagged.length) || 0;
+    fw.innerHTML = n
+        ? `<div style="font-size:13px;color:#555;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+               <span><strong>${n}</strong> megjelölt minta – az indok és a javítás (✓ jó / törlés)
+               a lenti <strong>„Feltöltött tanítóadatok"</strong> táblában, mintánként.</span>
+               <button class="btn btn-sm btn-blue" onclick="qShowFlaggedInTable()">Megjelöltek mutatása a táblában</button>
+           </div>`
+        : `<div style="font-size:12px;color:#2e7d32">Nincs megjelölt (gyanús vagy ártó) minta. 👍</div>`;
+}
+
+// A táblázat „csak megjelöltek" szűrőjét bekapcsolja és odagörget.
+function qShowFlaggedInTable() {
+    const cb = document.getElementById('dataFlaggedOnly');
+    if (cb && !cb.checked) { cb.checked = true; loadData(); }
+    document.getElementById('dataTableWrap').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 async function qStartAudit() {
@@ -748,26 +811,33 @@ async function qStartAudit() {
 }
 
 async function qPollAudit() {
+    _qAuditPolling = true;
     let d;
     try { d = await fetch('/finetune/audit/status').then(r => r.json()); }
-    catch { return; }
+    catch { clearTimeout(_qAuditTimer); _qAuditTimer = setTimeout(qPollAudit, 2000); return; }
 
     const logBox = document.getElementById('qAuditLog');
-    logBox.innerHTML = (d.log_tail || []).map(l => {
-        let cls = '';
-        if (l.includes('HIBA') || l.includes('Error')) cls = 'log-err';
-        else if (l.includes('kész') || l.includes('Kész')) cls = 'log-ok';
-        return `<div class="${cls}">${esc(l)}</div>`;
-    }).join('');
-    logBox.scrollTop = logBox.scrollHeight;
+    const lines  = d.log_tail || [];
+    if (lines.length) {
+        logBox.style.display = 'block';   // frissítés után is jelenjen meg a terminál
+        logBox.innerHTML = lines.map(l => {
+            let cls = '';
+            if (l.includes('HIBA') || l.includes('Error')) cls = 'log-err';
+            else if (l.includes('kész') || l.includes('Kész')) cls = 'log-ok';
+            return `<div class="${cls}">${esc(l)}</div>`;
+        }).join('');
+        logBox.scrollTop = logBox.scrollHeight;
+    }
 
     document.getElementById('qAuditInfo').textContent =
         d.running ? `Audit fut… (${d.audited}/${d.total})` : `${d.audited}/${d.total} auditálva`;
 
     if (d.running) {
+        document.getElementById('qAuditBtn').disabled = true;
         clearTimeout(_qAuditTimer);
         _qAuditTimer = setTimeout(qPollAudit, 2000);
     } else {
+        _qAuditPolling = false;
         document.getElementById('qAuditBtn').disabled = false;
         loadQuality();
         loadData();

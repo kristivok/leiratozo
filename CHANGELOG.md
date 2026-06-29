@@ -35,6 +35,18 @@ A jelentősebb funkcióváltozások időrendben. Részletes leírás: `README.md
 - **Forrás-túlsúly**: forrásonkénti megoszlás-riport + figyelmeztetés (`QUALITY_SOURCE_WARN_PCT`),
   és **forrás-sapka a tanításnál** (`FINETUNE_MAX_MIN_PER_SOURCE`) a domináns források alulmintavételezésére.
 
+**Minőség – kézi felülbírálás és per-minta javítás**
+- **Hibás jelölés kézi levétele**: egy minta kézzel „jónak" jelölhető (`quality_ok`), ami **felülírja**
+  az automatikus besorolást (heurisztika ÉS audit), és **a következő audit után is megmarad**
+  (✓ ellenőrizve). A sor `↩` gombjával visszavonható.
+- **Az indok („log") és a javítás az egyes mintáknál**, a „Feltöltött tanítóadatok" táblában: a leirat
+  alatt látszik a megjelölés oka (+ WER/loss), a sorban `✓` gomb a kézi jó jelöléshez. A minőség-panel
+  csak az összegzést/forrásokat/auditot tartalmazza (a korábbi külön „megjelölt minták" lista helyett
+  egy rövid mutató + „Megjelöltek mutatása a táblában" gomb).
+- **„Csak a megjelöltek (⛔/⚠)" szűrő** a tanítóadat-tábla fölött.
+- **Audit terminál-log oldalfrissítés után is**: a futó audit logja bármikor újratöltöd az oldalt,
+  tovább látható és frissül (mint a finetune log).
+
 ### Módosítva
 
 - **Import (diarizáló daraboló) szinkronizálás**: ha egy **már importált** chunkon utólag javítod a
@@ -46,6 +58,8 @@ A jelentősebb funkcióváltozások időrendben. Részletes leírás: `README.md
   „Korábbi darabolások" lista görgethetők.
 - **Korábbi darabolások**: a listából eltávolítva a „Törlés" – a darabolások tartósan megmaradnak
   (`diar_split_sessions/`), nem veszhetnek el.
+- **Minőség-panel egyszerűsítve**: a per-minta indok/log és a javítás a táblába került (lásd fent);
+  a panelen csak összegzés + forráseloszlás + audit marad.
 
 ### Javítva
 
@@ -57,10 +71,11 @@ A jelentősebb funkcióváltozások időrendben. Részletes leírás: `README.md
 ### Technikai
 
 - **Új fájlok**: `training_quality.py`, `training_audit.py`.
-- **DB (`training_data`) új oszlopok**: `source`, `audit_wer`, `audit_loss`, `audit_at` (automatikus migráció).
+- **DB (`training_data`) új oszlopok**: `source`, `audit_wer`, `audit_loss`, `audit_at`, `quality_ok` (automatikus migráció).
 - **Új .env változók**: `FINETUNE_MAX_MIN_PER_SOURCE` (perc/forrás, 0=ki), `QUALITY_SOURCE_WARN_PCT` (alap 30).
 - **Új API-végpontok**:
   - `GET  /finetune/quality` – minőség-összegzés, forráseloszlás, megjelölt minták
   - `POST /finetune/audit/start`, `GET /finetune/audit/status` – GPU modell-audit
   - `GET  /finetune/data/<id>/audio`, `POST /finetune/data/<id>/trim` – feltöltött minta hang + rövidítés
+  - `POST /finetune/data/<id>/quality-ok` – minta kézi „jó" jelölése / visszavonása (auto-besorolás felülírása)
   - `GET  /finetune/diar-split/segment/<sid>/<idx>`, `POST /finetune/diar-split/trim/<sid>/<idx>` – hullámforma-ablak + vágás

@@ -420,9 +420,24 @@ eseteken van, hogy egy hibás vagy túlreprezentált anyag ne tanítsa félre a 
    Magas WER → valószínű hibás címke; magas loss → a modell a tanítás ellenére sem illeszti.
    Ezzel a **már betanításra használt** minták közül is kiderül, melyek vitték félre a tanulást.
    Az eredmény a `training_data.audit_wer / audit_loss / audit_at` oszlopokba kerül, és beépül az osztályozásba.
-   A finomhangolás alatt nem indítható (GPU-ütközés).
+   A finomhangolás alatt nem indítható (GPU-ütközés). Az audit **háttérben fut**, és a terminál-logja
+   (mint a finetune logja) **oldalfrissítés után is** mutatja a folyamatot – bármikor töltöd újra az oldalt,
+   az éppen futó audit állapotát látod.
 
 A jelölés **tájékoztató** – a tanítást nem módosítja, a gyenge mintákat a táblázatban kézzel törölheted.
+
+**A jelölés indoka és javítása mintánként, a táblázatban:** a minőség-panel csak az összegzést, a
+forráseloszlást és az auditot tartalmazza; a **megjelölés indoka („log") és a javítás közvetlenül az
+egyes mintáknál**, a **„Feltöltött tanítóadatok"** táblában jelenik meg – a leirat alatt látszik az ok
+(pl. *„túl hosszú (33.3s > 29s) · emelt WER (53%)"*), a sorban pedig egy **`✓`** gomb a kézi „jó"
+jelöléshez. A táblázat fölötti **„Csak a megjelöltek (⛔/⚠)"** kapcsolóval csak a jelöltek listázhatók
+(a panel „Megjelöltek mutatása a táblában" gombja is ezt kapcsolja be).
+
+**Hibás jelölés kézi levétele:** ha egy minta tévesen kapott ⛔/⚠ címkét (pl. „emelt WER", de a leirat
+valójában jó), a sor **`✓`** gombjával (vagy a szerkesztő-sorban „✓ Jónak jelölés") kézzel jónak
+jelölheted. Ez **felülírja** az automatikus besorolást (heurisztika ÉS audit), és **a következő audit
+után is megmarad** – a minta `✓ ellenőrizve` jelölést kap. A sor **`↩`** gombjával bármikor visszavonható.
+(Tárolás: `training_data.quality_ok`; végpont: `POST /finetune/data/<id>/quality-ok`.)
 
 **Forrás-túlsúly és sapka:**
 
@@ -477,6 +492,7 @@ A loss futások között **nem hasonlítható össze közvetlenül** – több v
 | `audit_wer` | Modell-audit: WER a modell átirata vs. referencia (NULL = nem auditált) |
 | `audit_loss` | Modell-audit: per-minta loss |
 | `audit_at` | Audit időpontja |
+| `quality_ok` | Kézzel „jónak" jelölve (1) – felülírja az auto-besorolást, túléli az auditot |
 
 ### `finetune_runs` DB tábla
 
@@ -636,6 +652,7 @@ journalctl -u transcriber -f
 | `/finetune/data/<id>/delete` | POST | Minta törlése |
 | `/finetune/data/<id>/audio` | GET | Minta hangja ID alapján (hullámforma-szerkesztőhöz) |
 | `/finetune/data/<id>/trim` | POST | Feltöltött minta WAV-jának rövidítése helyben (`{start, end}`) |
+| `/finetune/data/<id>/quality-ok` | POST | Minta kézi „jó" jelölése / visszavonása (`{ok}`) – felülírja az auto-besorolást |
 | `/finetune/audio/<filename>` | GET | Hanganyag letöltése |
 | `/finetune/quality` | GET | Minőség-osztályozás: összegzés, forráseloszlás, megjelölt minták |
 | `/finetune/audit/start` | POST | GPU modell-audit indítása (per-minta WER + loss) |
