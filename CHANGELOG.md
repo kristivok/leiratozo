@@ -79,3 +79,9 @@ A jelentősebb funkcióváltozások időrendben. Részletes leírás: `README.md
   - `GET  /finetune/data/<id>/audio`, `POST /finetune/data/<id>/trim` – feltöltött minta hang + rövidítés
   - `POST /finetune/data/<id>/quality-ok` – minta kézi „jó" jelölése / visszavonása (auto-besorolás felülírása)
   - `GET  /finetune/diar-split/segment/<sid>/<idx>`, `POST /finetune/diar-split/trim/<sid>/<idx>` – hullámforma-ablak + vágás
+
+### Dokumentáció
+
+- Új README-szekció: **„Tanítóadat-gyűjtési útmutató (jó gyakorlatok)"** – mit/hogyan gyűjtsünk,
+  diverzitás, mi ismétlődjön / mi ne, fix műsorvezetők aránya, telefonos/zajos hang értéke,
+  a loss/WER értelmezése a gyűjtésnél.

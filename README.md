@@ -450,6 +450,61 @@ hogy egyetlen anyag se tanítsa félre a modellt (ismeretlen forrásúak nincsen
 
 ---
 
+### Tanítóadat-gyűjtési útmutató (jó gyakorlatok)
+
+**Fő elv:** a finomhangolás azt tanulja meg, amit adsz neki. Két cél: (1) a modell legyen jó azon, amit
+élesben átírsz → az adat **tükrözze a valós használatot** (a ti hangjaitok, mikrofonjaitok, szókincsetek);
+(2) ne torzuljon → **változatosság** kell. A legfontosabb messze a **címke pontossága** (a szöveg pontosan
+illik a hanghoz) – egy hibás címke többet ront, mint amennyit sok jó minta javít.
+
+**Milyen mintákat töltsünk fel – diverzitás.** Törekedj változatosságra:
+- **beszélők**: több műsorvezető + sok különböző vendég/betelefonáló;
+- **akusztikai körülmények**: stúdió, **telefon**, terepi/zajos – pont amilyenek élesben előfordulnak;
+- **témák/szókincs**: minél többféle, hogy a nevek, szakszavak sokféle kontextusban szerepeljenek.
+- Technikai: hossz **2–25 mp** (29 fölött csonkol), **cps 8–20**, nincs elvágott szó a széleken, tiszta,
+  egy beszélős szakasz.
+
+**Mi ISMÉTLŐDJÖN (hasznos ismétlés):** visszatérő tulajdonnevek/szakszavak **különböző mondatokban**
+(így tanulja meg helyesen leírni őket); a valós akusztikai körülmények bő lefedése; **egységes** központozási
+és számírási stílus mindenhol.
+
+**Mi NE ismétlődjön (káros ismétlés):**
+- **szó szerinti duplikátum** (ugyanaz a klip/mondat sokszor) – nincs tanulási értéke (a panel ⚠-vel jelzi);
+- **boilerplate intro/outro/szignál** (pl. állandó köszöntés, szponzor-szöveg) – a modell „odahallucinálja",
+  ahova nem való; ezekből keveset tarts, vagy vágd ki;
+- **egyetlen forrás vagy hang túlsúlya** (lásd forrás-sapka).
+
+**Fix műsorvezetők aránya.** Használd őket bőven (élesben is ők dominálnak; az ASR-finomhangolás nem
+beszélő-felismerés, így a beszélő-túlsúly kevésbé veszélyes, mint egy hibás címke), de hagyj helyet a
+vendégeknek/telefonnak, hogy a modell általánosítson:
+
+| Tartomány | Ökölszabály |
+|---|---|
+| Műsorvezetők összesen | a korpusz nagyobb része lehet (~50–70%), ha élesben is ennyi |
+| Egyetlen műsorvezető | ne menjen ~40% fölé egyedül |
+| Vendég / telefon / terepi / egyéb | maradjon ~30–40% |
+| Egyetlen felvétel (forrás) | sapkázd (pl. max 10–15 perc/forrás) |
+
+**Rossz minőségű / telefonos hang = értékes.** A telefonos, zajos hang **nem csak megengedett, hanem
+kifejezetten hasznos** – az alapmodell ezen a leggyengébb, így itt javít a legtöbbet a finomhangolás –,
+**amíg a leirat pontos** és a beszéd érthető. A „rossz akusztika" (telefon/zaj) jó; a „rossz minta"
+(bizonytalan/hibás címke, érthetetlen vagy átfedő beszéd) árt. Kivehetetlen szót **ne tippelj** – vágd ki
+vagy hagyd ki. Ezek a minták tipikusan **magasabb WER/loss**-t kapnak: ez **normális, nem ok a kidobásra** –
+hallgasd meg, és ha a leirat helyes, tartsd meg (akár „✓ jó"-ra jelölve).
+
+**A loss/WER értelmezése a gyűjtésnél.**
+- **loss < 0,1**: a szöveg pontosan illik a hanghoz → **tiszta, korrekt** minta. De a modell ezt **már tudja**,
+  ezért a **tanulási értéke kicsi** (a gradiens ~0). **Nem haszontalan** – stabilizál, megakadályozza a
+  felejtést a gyakori/könnyű eseteken –, csak nem innen jön a fejlődés. **Ne töröld** őket.
+- A tényleges fejlődés a **nehéz, de helyesen címkézett** mintákból jön (ritka nevek, telefon, zaj, akcentus)
+  – ezek közepes–magasabb lossúak. A javuláshoz: **javítsd/töröld a hibás címkéket** (magas WER) és **hozz be
+  több nehéz, helyes mintát**.
+- Ha sok a 0,1 alatti minta, az azt jelzi, hogy az alapmodell már jó a tipikus anyagotokon; érdemes több
+  nehéz/változatos anyaggal bővíteni (nem a könnyűeket törölni). Ha a 0,1 alattiak közt sok a **rövid,
+  triviális** klip („Köszönöm", „Jó napot"), az jelzés a korpusz kiegyensúlyozására.
+
+---
+
 ### A betanítás menete
 
 - Betanítás **kézzel indítható** – automatikus ütemezés alapból ki van kapcsolva
