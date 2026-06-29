@@ -46,6 +46,37 @@
         .btn-orange:hover { background: #e65100; }
         .btn-sm { padding: 4px 10px; font-size: 12px; margin: 0; }
 
+        /* ── Hullámforma / vágó szerkesztő ── */
+        .ds-wave-wrap {
+            position: relative; width: 100%; height: 92px;
+            background: #0d1b2a; border-radius: 6px; overflow: hidden;
+            touch-action: none; user-select: none; -webkit-user-select: none;
+            cursor: crosshair;
+        }
+        .ds-wave-wrap canvas { display: block; width: 100%; height: 100%; }
+        .ds-handle {
+            position: absolute; top: 0; height: 100%; width: 16px; margin-left: -8px;
+            cursor: ew-resize; z-index: 3;
+        }
+        .ds-handle .grip {
+            position: absolute; left: 7px; top: 0; width: 2px; height: 100%;
+            background: #ffb300;
+        }
+        .ds-handle .knob {
+            position: absolute; left: 3px; top: 50%; transform: translateY(-50%);
+            width: 10px; height: 30px; background: #ffb300; border-radius: 3px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.5);
+        }
+        .ds-ed-bar {
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+            margin-top: 8px; font-size: 12px; color: #555;
+        }
+        .ds-ed-bar .pill {
+            background: #f5f5f5; border-radius: 10px; padding: 2px 9px; font-size: 11px;
+        }
+        .ds-ed-bar .pill.add { background: #e8f5e9; color: #2e7d32; }
+        .ds-ed-bar .pill.cut { background: #fff3e0; color: #e65100; }
+
         .form-row { margin-bottom: 14px; }
         .form-row label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 5px; }
         .form-row input[type=file], .form-row textarea, .form-row input[type=number] {
@@ -129,13 +160,24 @@
         .data-table col.col-date   { width: 96px; }
         .data-table col.col-dur    { width: 48px; }
         .data-table col.col-text   { width: auto; }
-        .data-table col.col-status { width: 90px; }
+        .data-table col.col-qual   { width: 84px; }
+        .data-table col.col-status { width: 70px; }
         .data-table col.col-acts   { width: 90px; }
         .tag-used   { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px;
                       background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
         .tag-unused { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px;
                       background: #fff3e0; color: #e65100; border: 1px solid #ffcc80; }
         .transcript-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        /* Minőség-jelvények */
+        .q-badge { display:inline-block; padding:2px 7px; border-radius:10px; font-size:11px;
+                   font-weight:600; cursor:help; white-space:nowrap; }
+        .q-ok   { background:#e8f5e9; color:#2e7d32; border:1px solid #c8e6c9; }
+        .q-warn { background:#fff8e1; color:#f57f17; border:1px solid #ffe082; }
+        .q-bad  { background:#ffebee; color:#c62828; border:1px solid #ffcdd2; }
+        .src-bar-wrap { background:#f0f0f0; border-radius:4px; height:14px; overflow:hidden; flex:1; min-width:80px; }
+        .src-bar { height:100%; background:#90caf9; }
+        .src-bar.over { background:#ef9a9a; }
 
         /* Runs table */
         .runs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -347,8 +389,48 @@
     <!-- Korábbi session-ök -->
     <div id="dsPrevWrap" style="margin-top:16px; border-top:1px solid #eee; padding-top:14px; display:none;">
         <div style="font-size:13px; font-weight:600; color:#555; margin-bottom:8px;">Korábbi darabolások</div>
-        <div id="dsPrevList"></div>
+        <div id="dsPrevList" class="data-scroll-wrap" style="max-height:280px; overflow-y:auto; padding:0 4px;"></div>
     </div>
+</div>
+
+<!-- ── Tanítóadat minőség ── -->
+<div class="card" id="qualityCard">
+    <h2>Tanítóadat minőség</h2>
+    <div class="alert alert-info" style="margin-bottom:14px">
+        A rendszer megjelöli, mely minták <strong>javíthatják</strong> a modellt (✅) és melyek
+        <strong>vihetik félre</strong> a tanulást (⛔ / ⚠) – pl. ha a leirat nem illik a hanghoz,
+        ismétlődő hallucináció, rossz hossz, vagy egy forrásból túl sok van.
+        A jelölés <strong>tájékoztató</strong>: a tanítást nem módosítja (a gyenge mintákat
+        a táblázatban tudod törölni), kivéve a forrás-sapkát (lásd lent).
+    </div>
+
+    <div id="qSummary" style="font-size:13px;color:#555;margin-bottom:12px">Betöltés…</div>
+
+    <!-- Forráseloszlás -->
+    <div id="qSourcesWrap" style="margin-bottom:14px; display:none;">
+        <div style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">Források szerinti megoszlás</div>
+        <div id="qOverrep" style="margin-bottom:8px"></div>
+        <div id="qSources" class="data-scroll-wrap" style="max-height:240px; overflow-y:auto; padding:2px 4px;"></div>
+    </div>
+
+    <!-- Modell-audit -->
+    <div style="border-top:1px solid #eee; padding-top:12px; margin-bottom:8px;">
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+            <button class="btn btn-blue btn-sm" id="qAuditBtn" onclick="qStartAudit()">
+                ▶ Modell-audit futtatása (GPU)
+            </button>
+            <span id="qAuditInfo" style="font-size:12px;color:#888"></span>
+        </div>
+        <div style="font-size:11px;color:#999;margin-top:5px">
+            A modellel végigmegy az összes mintán, és per-mintára WER-t (átirat-eltérés) és loss-t mér.
+            Ezzel derülnek ki a <strong>már betanításra használt</strong> minták közül is azok, amelyek félreviszik a tanulást.
+            A finomhangolás alatt nem indítható (GPU-ütközés).
+        </div>
+        <div id="qAuditLog" class="log-box" style="max-height:140px; margin-top:8px; display:none;"></div>
+    </div>
+
+    <!-- Megjelölt minták -->
+    <div id="qFlaggedWrap" style="margin-top:8px;"></div>
 </div>
 
 <!-- ── Tanítóadatok táblázata ── -->
@@ -401,6 +483,9 @@
 
 <script>
 let pollTimer = null;
+// Hullámforma-szerkesztők állapota (a deklaráció itt fent, mert a loadData() initkor használja)
+const _dsEditors = {};      // editor-kulcs (chunk-index vagy 'td_<id>') -> állapot
+let   _dsAudioCtx = null;
 
 // ── Formázók ─────────────────────────────────────────────────────────────────
 function esc(s) {
@@ -510,6 +595,7 @@ function renderRuns(runs) {
 
 // ── Tanítóadatok ──────────────────────────────────────────────────────────────
 async function loadData() {
+    _tdStopEditors();   // a táblázat újrarajzolása előtt a nyitott hullámformákat leállítjuk
     let d;
     try { d = await fetch('/finetune/data').then(r => r.json()); }
     catch { return; }
@@ -532,6 +618,7 @@ async function loadData() {
             <td style="font-size:12px">${fmtDt(it.uploaded_at)}</td>
             <td>${it.duration_s}s</td>
             <td class="transcript-preview" id="tdPrev_${it.id}" title="${esc(it.transcript)}">${preview}</td>
+            <td>${qBadge(it.quality, it.reasons)}</td>
             <td>${tag}</td>
             <td onclick="event.stopPropagation()" style="white-space:nowrap">
                 ${audioLink}
@@ -539,14 +626,15 @@ async function loadData() {
             </td>
         </tr>
         <tr id="tdEdit_${it.id}" style="display:none; background:#f8f9ff;">
-            <td colspan="6" style="padding:10px 14px; overflow:visible;">
+            <td colspan="7" style="padding:10px 14px; overflow:visible;">
                 <div style="font-size:12px;color:#888;margin-bottom:5px;">Leirat szerkesztése (#${it.id})</div>
-                <textarea id="tdTxt_${it.id}" rows="3"
+                <textarea id="tdTxt_${it.id}" rows="3" oninput="_dsAutoGrow(this)"
                     style="width:100%;padding:7px 9px;font-size:13px;border:1px solid #90caf9;
-                           border-radius:6px;font-family:inherit;resize:vertical;box-sizing:border-box;"
+                           border-radius:6px;font-family:inherit;resize:vertical;overflow:hidden;box-sizing:border-box;"
                 >${esc(it.transcript)}</textarea>
+                <div id="tdEd_${it.id}" style="margin-top:8px;"></div>
                 <div style="display:flex;gap:8px;margin-top:7px;align-items:center;">
-                    <button class="btn btn-green btn-sm" onclick="saveTranscript(${it.id})">Mentés</button>
+                    <button class="btn btn-green btn-sm" onclick="saveTranscript(${it.id})">Mentés (szöveg + vágás)</button>
                     <button class="btn btn-sm" style="background:#eee;color:#555;"
                         onclick="tdToggleEdit(${it.id})">Mégse</button>
                     <span id="tdSaveMsg_${it.id}" style="font-size:12px;"></span>
@@ -557,24 +645,147 @@ async function loadData() {
     el.innerHTML = `<table class="data-table">
         <colgroup>
             <col class="col-id"><col class="col-date"><col class="col-dur">
-            <col class="col-text"><col class="col-status"><col class="col-acts">
+            <col class="col-text"><col class="col-qual"><col class="col-status"><col class="col-acts">
         </colgroup>
         <thead><tr>
             <th>#</th><th>Feltöltve</th><th>Hossz</th>
-            <th>Leirat</th><th>Tanítva</th><th></th>
+            <th>Leirat</th><th>Minőség</th><th>Tanítva</th><th></th>
         </tr></thead>
         <tbody>${rows}</tbody>
     </table>`;
 }
 
+// ── Minőség badge + panel ─────────────────────────────────────────────────────
+function qBadge(quality, reasons) {
+    const r = (reasons && reasons.length) ? reasons.join(' · ') : '';
+    if (quality === 'bad')  return `<span class="q-badge q-bad"  title="${esc(r)}">⛔ árthat</span>`;
+    if (quality === 'warn') return `<span class="q-badge q-warn" title="${esc(r)}">⚠ gyanús</span>`;
+    return `<span class="q-badge q-ok" title="rendben">✅ jó</span>`;
+}
+
+let _qAuditTimer = null;
+
+async function loadQuality() {
+    let d;
+    try { d = await fetch('/finetune/quality').then(r => r.json()); }
+    catch { return; }
+
+    const s = d.summary || {};
+    document.getElementById('qSummary').innerHTML =
+        `<span class="q-badge q-ok">✅ jó: ${s.ok||0}</span> &nbsp; ` +
+        `<span class="q-badge q-warn">⚠ gyanús: ${s.warn||0}</span> &nbsp; ` +
+        `<span class="q-badge q-bad">⛔ árthat: ${s.bad||0}</span> &nbsp;·&nbsp; ` +
+        `összesen <strong>${s.total||0}</strong> minta, ${s.total_min||0} perc` +
+        `&nbsp;·&nbsp; auditálva: ${s.audited||0}/${s.total||0}`;
+
+    // Forráseloszlás
+    const wrap = document.getElementById('qSourcesWrap');
+    if (d.sources && d.sources.length) {
+        wrap.style.display = 'block';
+        document.getElementById('qSources').innerHTML = d.sources.map(src => `
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:12px;">
+                <span style="min-width:160px;${src.over?'color:#c62828;font-weight:600':''}"
+                      title="${esc(src.source)}">${esc(src.source.length>26?src.source.slice(0,25)+'…':src.source)}</span>
+                <div class="src-bar-wrap"><div class="src-bar ${src.over?'over':''}" style="width:${Math.min(100,src.share_pct)}%"></div></div>
+                <span style="min-width:120px;color:#666">${src.minutes} p · ${src.share_pct}% · ${src.count} db</span>
+            </div>`).join('');
+
+        const ov = d.overrep || {};
+        const cap = d.cap_min_per_source || 0;
+        const capTxt = cap > 0
+            ? `Forrás-sapka a tanításnál: <strong>${cap} perc/forrás</strong> (FINETUNE_MAX_MIN_PER_SOURCE).`
+            : `Forrás-sapka <strong>kikapcsolva</strong> – bekapcsolható az <code>FINETUNE_MAX_MIN_PER_SOURCE</code> .env változóval (perc/forrás), így egy domináns anyag nem tanítja félre a modellt.`;
+        document.getElementById('qOverrep').innerHTML = ov.warn
+            ? `<div class="alert alert-warn" style="margin:0 0 8px">⚠ Túlsúly: <strong>${esc(ov.dominant||'')}</strong> a hanganyag ${ov.dominant_pct}%-a (>${ov.threshold_pct}%). ${capTxt}</div>`
+            : `<div style="font-size:12px;color:#777">${capTxt}</div>`;
+    } else {
+        wrap.style.display = 'none';
+    }
+
+    // Audit infó
+    document.getElementById('qAuditInfo').textContent =
+        s.audit_running ? 'Audit fut…' : (s.audited ? `${s.audited} minta auditálva` : 'Még nem futott audit');
+
+    // Megjelölt minták
+    const fw = document.getElementById('qFlaggedWrap');
+    if (d.flagged && d.flagged.length) {
+        const rows = d.flagged.map(f => {
+            const extra = [];
+            if (f.audit_wer  != null) extra.push(`WER ${Math.round(f.audit_wer*100)}%`);
+            if (f.audit_loss != null) extra.push(`loss ${f.audit_loss}`);
+            const extraTxt = extra.length ? ` <span style="color:#999">(${extra.join(', ')})</span>` : '';
+            return `<div style="padding:7px 0;border-bottom:1px solid #f2f2f2;font-size:12px;">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    ${qBadge(f.quality, f.reasons)}
+                    <span style="color:#888">#${f.id}</span>
+                    <span style="color:#666">${f.duration_s}s · cps ${f.cps}</span>
+                    <span style="color:#999;font-size:11px" title="${esc(f.source)}">${esc(f.source)}</span>
+                    <button class="btn btn-red btn-sm" style="margin-left:auto"
+                        onclick="deleteSample(${f.id})" title="Minta törlése">✕</button>
+                </div>
+                <div style="color:#c0392b;margin-top:2px">${esc(f.reasons.join(' · '))}${extraTxt}</div>
+                <div style="color:#555;margin-top:2px">„${esc(f.preview)}"</div>
+            </div>`;
+        }).join('');
+        fw.innerHTML = `<div style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">
+            Megjelölt minták (${d.flagged.length}) – nézd át / töröld a tényleg rosszakat</div>
+            <div class="data-scroll-wrap" style="max-height:360px;overflow-y:auto;padding:0 4px;">${rows}</div>`;
+    } else {
+        fw.innerHTML = `<div style="font-size:12px;color:#2e7d32">Nincs megjelölt (gyanús vagy ártó) minta. 👍</div>`;
+    }
+}
+
+async function qStartAudit() {
+    const btn = document.getElementById('qAuditBtn');
+    btn.disabled = true;
+    let d;
+    try {
+        d = await fetch('/finetune/audit/start', { method: 'POST' }).then(r => r.json());
+    } catch (e) { btn.disabled = false; return; }
+    if (d.error) { alert(d.error); btn.disabled = false; return; }
+    document.getElementById('qAuditLog').style.display = 'block';
+    qPollAudit();
+}
+
+async function qPollAudit() {
+    let d;
+    try { d = await fetch('/finetune/audit/status').then(r => r.json()); }
+    catch { return; }
+
+    const logBox = document.getElementById('qAuditLog');
+    logBox.innerHTML = (d.log_tail || []).map(l => {
+        let cls = '';
+        if (l.includes('HIBA') || l.includes('Error')) cls = 'log-err';
+        else if (l.includes('kész') || l.includes('Kész')) cls = 'log-ok';
+        return `<div class="${cls}">${esc(l)}</div>`;
+    }).join('');
+    logBox.scrollTop = logBox.scrollHeight;
+
+    document.getElementById('qAuditInfo').textContent =
+        d.running ? `Audit fut… (${d.audited}/${d.total})` : `${d.audited}/${d.total} auditálva`;
+
+    if (d.running) {
+        clearTimeout(_qAuditTimer);
+        _qAuditTimer = setTimeout(qPollAudit, 2000);
+    } else {
+        document.getElementById('qAuditBtn').disabled = false;
+        loadQuality();
+        loadData();
+    }
+}
+
 function tdToggleEdit(id) {
     const editRow = document.getElementById(`tdEdit_${id}`);
     const isOpen  = editRow.style.display !== 'none';
-    // Bezárja az összes többi nyitott szerkesztőt
+    // Bezárja az összes többi nyitott szerkesztőt + leállítja a hullámformákat
     document.querySelectorAll('[id^="tdEdit_"]').forEach(r => r.style.display = 'none');
+    _tdStopEditors();
     if (!isOpen) {
         editRow.style.display = '';
-        document.getElementById(`tdTxt_${id}`).focus();
+        const ta = document.getElementById(`tdTxt_${id}`);
+        ta.focus();
+        _dsAutoGrow(ta);
+        _tdBuildEditor(id);   // hullámforma-szerkesztő betöltése a vágáshoz
     }
 }
 
@@ -584,26 +795,44 @@ async function saveTranscript(id) {
     if (!text) { msg.innerHTML = '<span style="color:#c62828">Nem lehet üres.</span>'; return; }
 
     msg.innerHTML = '<span style="color:#888">Mentés…</span>';
+
+    // 1) Leirat mentése
     const d = await fetch(`/finetune/data/${id}/edit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ transcript: text }),
     }).then(r => r.json());
-
     if (d.error) {
         msg.innerHTML = `<span style="color:#c62828">${esc(d.error)}</span>`;
+        return;
+    }
+
+    // 2) Vágás mentése – ha a hullámformán a csúszók elmozdultak (rövidítés)
+    const ed = _dsEditors['td_' + id];
+    const changed = ed && (Math.abs(ed.markStart - ed.origStart) > 0.01 ||
+                           Math.abs(ed.markEnd   - ed.origEnd)   > 0.01);
+    if (changed) {
+        dsEdStop(ed);
+        const t = await fetch(`/finetune/data/${id}/trim`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ start: ed.markStart, end: ed.markEnd }),
+        }).then(r => r.json()).catch(() => ({ error: 'hálózati hiba' }));
+        if (t.error) {
+            msg.innerHTML = `<span style="color:#e65100">Szöveg mentve, vágás hiba: ${esc(t.error)}</span>`;
+            return;
+        }
+        msg.innerHTML = `<span style="color:#2e7d32">✓ Szöveg + vágás mentve (${t.duration_s}s)</span>`;
     } else {
         msg.innerHTML = '<span style="color:#2e7d32">✓ Elmentve</span>';
-        // Előnézet frissítése a táblázatban
-        const prev = document.getElementById(`tdPrev_${id}`);
-        if (prev) {
-            prev.title = text;
-            prev.textContent = text.length > 80 ? text.substring(0, 78) + '…' : text;
-        }
-        setTimeout(() => {
-            document.getElementById(`tdEdit_${id}`).style.display = 'none';
-        }, 800);
     }
+
+    setTimeout(() => {
+        document.getElementById(`tdEdit_${id}`).style.display = 'none';
+        _tdStopEditors();
+        loadData();      // hossz / minőség-badge frissítése
+        loadQuality();
+    }, 800);
 }
 
 async function deleteSample(id) {
@@ -611,6 +840,7 @@ async function deleteSample(id) {
     const d = await fetch(`/finetune/data/${id}/delete`, { method: 'POST' }).then(r => r.json());
     if (d.error) { alert(d.error); return; }
     loadData();
+    loadQuality();
     pollStatus();
 }
 
@@ -866,6 +1096,7 @@ async function batchUpload() {
 // ── Init ─────────────────────────────────────────────────────────────────────
 pollStatus();
 loadData();
+loadQuality();
 pollTimer = setInterval(pollStatus, 3000);
 dsLoadSessions();
 
@@ -936,10 +1167,16 @@ async function dsPoll(sid) {
     }
 }
 
-function dsRenderChunks(sid, chunks) {
-    const wrap = document.getElementById('dsResultWrap');
-    wrap.style.display = 'block';
+let _dsLastSid = null, _dsLastChunks = [];
 
+// A leirat-szövegdoboz magasságát a tartalomhoz igazítja (ne kelljen kézzel nagyítani)
+function _dsAutoGrow(el) {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = (el.scrollHeight + 2) + 'px';
+}
+
+function _dsRenderSummary(sid, chunks) {
     const active    = chunks.filter(c => !c.deleted);
     const total     = chunks.length;
     const activeDur = active.reduce((s, c) => s + (c.duration_s || 0), 0);
@@ -966,6 +1203,16 @@ function dsRenderChunks(sid, chunks) {
         `<strong>${(activeDur/60).toFixed(1)} perc</strong> hanganyag` +
         (delCount ? ` &nbsp;·&nbsp; <span style="color:#e65100">${delCount} törölve</span>` : '') +
         (spkBtns ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">${spkBtns}</div>` : '');
+}
+
+function dsRenderChunks(sid, chunks) {
+    dsStopAllEditors();
+    _dsLastSid = sid;
+    _dsLastChunks = chunks;
+    const wrap = document.getElementById('dsResultWrap');
+    wrap.style.display = 'block';
+
+    _dsRenderSummary(sid, chunks);
 
     const rows = chunks.map((c, i) => {
         const isDeleted = !!c.deleted;
@@ -973,7 +1220,6 @@ function dsRenderChunks(sid, chunks) {
             ? `<span style="font-size:11px;background:#e3f2fd;color:#1565c0;border-radius:10px;padding:1px 7px">${esc(c.speaker)}</span>`
             : '';
         const dur      = `${c.duration_s ? c.duration_s.toFixed(1) : '?'}s`;
-        const audioUrl = `/finetune/diar-split/audio/${sid}/${encodeURIComponent(c.wav)}`;
         const impBadge = c.imported
             ? `<span style="font-size:11px;background:#e8f5e9;color:#2e7d32;border-radius:10px;padding:1px 7px">importálva</span>`
             : '';
@@ -994,22 +1240,40 @@ function dsRenderChunks(sid, chunks) {
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
                 <span style="font-size:12px;color:#888;min-width:40px">#${String(i+1).padStart(3,'0')}</span>
                 ${spkBadge}
-                <span style="font-size:12px;color:#999">${dur}</span>
+                <span style="font-size:12px;color:#999" id="dsDur_${i}">${dur}</span>
                 <span id="dsImp_${i}">${impBadge}${delBadge}</span>
                 <span style="margin-left:auto">${delBtn}</span>
             </div>
             ${isDeleted ? '' : `
-            <audio controls src="${audioUrl}" style="width:100%;height:32px;margin-bottom:6px;border-radius:4px;"></audio>
-            <textarea id="dsTxt_${i}" rows="2"
-                style="width:100%;padding:6px 8px;font-size:13px;border:1px solid #ddd;border-radius:6px;font-family:inherit;resize:vertical;"
+            <div id="dsEd_${i}" style="margin-bottom:8px;">
+                <div style="font-size:12px;color:#999;padding:6px 0">Hullámforma betöltése…</div>
+            </div>
+            <textarea id="dsTxt_${i}" rows="2" oninput="_dsAutoGrow(this)"
+                style="width:100%;padding:6px 8px;font-size:13px;border:1px solid #ddd;border-radius:6px;font-family:inherit;resize:vertical;overflow:hidden;min-height:42px;"
             >${esc(c.text)}</textarea>
             <button class="btn btn-sm" style="background:#e3f2fd;color:#1565c0;margin-top:4px;"
-                onclick="dsSaveOne('${sid}',${i})">Mentés</button>`}
+                onclick="dsSaveOne('${sid}',${i})">Mentés (szöveg + vágás)</button>
+            <span id="dsSaveMsg_${i}" style="font-size:11px;margin-left:6px"></span>`}
         </div>`;
     }).join('');
 
     document.getElementById('dsChunkList').innerHTML = `<div style="padding:0 2px;">${rows}</div>`;
     document.getElementById('dsImportAllBtn').setAttribute('data-sid', sid);
+
+    // Szövegdobozok automatikus magassága a tartalomhoz (ne kelljen kézzel nagyítani)
+    document.querySelectorAll('#dsChunkList textarea').forEach(_dsAutoGrow);
+
+    // A hullámformák automatikusan betöltődnek (egymás után, hogy ne terheljük túl a szervert)
+    _dsLoadAllEditors(sid, chunks);
+}
+
+async function _dsLoadAllEditors(sid, chunks) {
+    for (let i = 0; i < chunks.length; i++) {
+        if (chunks[i].deleted) continue;
+        // Közben új lista renderelődhetett (törlés/import) – ne dolgozzunk elavult adaton
+        if (_dsLastSid !== sid || _dsLastChunks !== chunks) return;
+        await _dsBuildEditor(sid, i, chunks[i].start || 0, chunks[i].end || 0);
+    }
 }
 
 async function dsToggleDelete(sid, idx, deleted) {
@@ -1030,14 +1294,66 @@ async function dsBulkDelete(sid, indices, deleted) {
     dsPoll(sid);
 }
 
+// A "Mentés" egyszerre menti a szöveget ÉS a hullámformán beállított vágást (ha változott),
+// hogy ne kelljen külön menteni.
 async function dsSaveOne(sid, idx) {
+    const msg  = document.getElementById(`dsSaveMsg_${idx}`);
     const text = document.getElementById(`dsTxt_${idx}`).value.trim();
-    const d = await fetch(`/finetune/diar-split/save/${sid}/${idx}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-    }).then(r => r.json());
-    if (d.error) alert(d.error);
+    if (msg) { msg.style.color = '#999'; msg.textContent = 'Mentés…'; }
+
+    // 1) Leirat mentése
+    let d;
+    try {
+        d = await fetch(`/finetune/diar-split/save/${sid}/${idx}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+        }).then(r => r.json());
+    } catch (e) {
+        if (msg) { msg.style.color = '#c62828'; msg.textContent = 'Hálózati hiba.'; }
+        return;
+    }
+    if (d.error) {
+        if (msg) { msg.style.color = '#c62828'; msg.textContent = d.error; }
+        return;
+    }
+
+    // 2) Vágás mentése – csak ha a csúszók elmozdultak az eredeti határhoz képest
+    const ed = _dsEditors[idx];
+    const changed = ed && (Math.abs(ed.markStart - ed.origStart) > 0.01 ||
+                           Math.abs(ed.markEnd   - ed.origEnd)   > 0.01);
+    if (!changed) {
+        if (msg) { msg.style.color = '#2e7d32'; msg.textContent = '✓ Mentve'; }
+        return;
+    }
+
+    dsEdStop(ed);
+    let t;
+    try {
+        t = await fetch(`/finetune/diar-split/trim/${sid}/${idx}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ start: ed.markStart, end: ed.markEnd }),
+        }).then(r => r.json());
+    } catch (e) {
+        if (msg) { msg.style.color = '#e65100'; msg.textContent = 'Szöveg mentve, de a vágás nem (hálózati hiba).'; }
+        return;
+    }
+    if (t.error) {
+        if (msg) { msg.style.color = '#e65100'; msg.textContent = 'Szöveg mentve, vágás hiba: ' + t.error; }
+        return;
+    }
+
+    // Helyi állapot + összegzés frissítése, és csak ezt az egy hullámformát építjük újra
+    const ch = _dsLastChunks[idx];
+    if (ch) { ch.start = t.start; ch.end = t.end; ch.duration_s = t.duration_s; }
+    const durEl = document.getElementById('dsDur_' + idx);
+    if (durEl) durEl.textContent = `${t.duration_s.toFixed(1)}s`;
+    _dsRenderSummary(_dsLastSid, _dsLastChunks);
+    await _dsBuildEditor(sid, idx, t.start, t.end);
+
+    const m2 = document.getElementById(`dsSaveMsg_${idx}`);
+    if (m2) { m2.style.color = '#2e7d32'; m2.textContent = `✓ Szöveg + vágás mentve (${t.duration_s.toFixed(1)}s)`; }
 }
 
 async function dsImportAll() {
@@ -1092,8 +1408,7 @@ async function dsLoadSessions() {
             ${statusPill}
             <span style="font-size:12px;color:#888">${(s.created_at||'').substring(0,16).replace('T',' ')}</span>
             <span style="font-size:12px;color:#555">${s.chunk_count} chunk${imp}</span>
-            ${s.status === 'done' ? `<button class="btn btn-sm btn-blue" onclick="dsLoadSession('${s.session_id}')">Megnyitás</button>` : ''}
-            <button class="btn btn-sm btn-red" onclick="dsDeleteSession('${s.session_id}')">Törlés</button>
+            ${s.status === 'done' ? `<button class="btn btn-sm btn-blue" style="margin-left:auto" onclick="dsLoadSession('${s.session_id}')">Megnyitás</button>` : ''}
         </div>`;
     }).join('');
 }
@@ -1120,6 +1435,383 @@ async function dsDeleteSession(sid) {
     if (d.error) alert(d.error);
     else dsLoadSessions();
 }
+
+// ── Hullámforma / vágó szerkesztő ─────────────────────────────────────────────
+function _dsCtx() {
+    if (!_dsAudioCtx) _dsAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    return _dsAudioCtx;
+}
+
+function dsStopAllEditors() {
+    for (const k of Object.keys(_dsEditors)) {
+        try { dsEdStop(_dsEditors[k]); } catch (e) {}
+        delete _dsEditors[k];
+    }
+}
+
+async function _dsBuildEditor(sid, i, start, end) {
+    const box = document.getElementById('dsEd_' + i);
+    if (!box) return;
+
+    // Ha már volt szerkesztő ezen az indexen (pl. újravágás után), előbb leállítjuk
+    if (_dsEditors[i]) { try { dsEdStop(_dsEditors[i]); } catch (e) {} delete _dsEditors[i]; }
+
+    let resp, buf, winStart, winEnd, origStart, origEnd;
+    try {
+        resp = await fetch(`/finetune/diar-split/segment/${sid}/${i}?pad=6`);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        winStart  = parseFloat(resp.headers.get('X-Window-Start'));
+        winEnd    = parseFloat(resp.headers.get('X-Window-End'));
+        origStart = parseFloat(resp.headers.get('X-Chunk-Start'));
+        origEnd   = parseFloat(resp.headers.get('X-Chunk-End'));
+        const ab  = await resp.arrayBuffer();
+        buf = await _dsCtx().decodeAudioData(ab);
+    } catch (e) {
+        box.innerHTML = `<div style="font-size:12px;color:#c62828;padding:6px 0">Nem sikerült betölteni a hullámformát: ${esc(e.message)}</div>`;
+        return;
+    }
+
+    // Fallback ha a fejlécek hiányoznának
+    if (isNaN(winStart)) winStart = Math.max(0, start - 6);
+    if (isNaN(winEnd))   winEnd   = end + 6;
+    if (isNaN(origStart)) origStart = start;
+    if (isNaN(origEnd))   origEnd   = end;
+
+    const ed = {
+        sid, i, buffer: buf,
+        winStart, winEnd, origStart, origEnd,
+        markStart: origStart, markEnd: origEnd,
+        playing: false, src: null, raf: null,
+        playStartCtx: 0, playBaseOffset: 0, pauseOffset: 0,
+        peaks: null, peaksW: 0,
+    };
+    _dsMountEditor(ed, box, true);
+}
+
+// Közös szerkesztő-megjelenítés (diar daraboló és feltöltött tanítóadat is használja).
+// extendable=true: lehet környezeti hangot is hozzáadni (diar); false: csak rövidítés.
+function _dsMountEditor(ed, box, extendable) {
+    const i = ed.i;
+    // onclick-argumentum: szám marad szám, string egyszeres idézőjellel (a dupla idézőjeles
+    // attribútumon belül a JSON.stringify dupla idézőjele eltörné a HTML-t)
+    const iArg = (typeof i === 'number') ? i : "'" + i + "'";
+    _dsEditors[i] = ed;
+    const help = extendable
+        ? `A sárga csúszókkal vágd le a felesleges / elvágott részeket, vagy húzd kifelé,
+           hogy környezeti hangot adj az elejéhez és a végéhez.`
+        : `A sárga csúszókkal vágd le a minta elejét / végét (rövidítés).`;
+    box.innerHTML = `
+        <div class="ds-wave-wrap" id="dsWave_${i}">
+            <canvas id="dsCanvas_${i}"></canvas>
+            <div class="ds-handle" id="dsH0_${i}"><div class="grip"></div><div class="knob"></div></div>
+            <div class="ds-handle" id="dsH1_${i}"><div class="grip"></div><div class="knob"></div></div>
+            <div id="dsPH_${i}" style="position:absolute;top:0;height:100%;width:2px;background:#fff;display:none;pointer-events:none;z-index:2;"></div>
+        </div>
+        <div class="ds-ed-bar">
+            <button class="btn btn-sm btn-blue" id="dsPlayBtn_${i}" onclick="dsEdPlayPause(${iArg})">▶ Lejátszás</button>
+            <button class="btn btn-sm" style="background:#eee;color:#555" onclick="dsEdReset(${iArg})">↺ Eredeti</button>
+            <span class="pill" id="dsLen_${i}"></span>
+            <span class="pill" id="dsD0_${i}"></span>
+            <span class="pill" id="dsD1_${i}"></span>
+        </div>
+        <div style="font-size:11px;color:#999;margin-top:4px">
+            ${help} A lejátszás csak a két csúszó között szól.
+            A hullámformára kattintva / húzva mozgathatod a lejátszási pontot (görgetés a hangban).
+            A beállított vágás a <strong>„Mentés"</strong> gombbal a szöveggel együtt mentődik.
+        </div>`;
+
+    _dsAttachDrag(document.getElementById('dsH0_' + i), ed, 0);
+    _dsAttachDrag(document.getElementById('dsH1_' + i), ed, 1);
+    _dsAttachSeek(document.getElementById('dsWave_' + i), ed);
+    _dsDraw(ed);
+}
+
+// Hullámforma-szerkesztő egy feltöltött tanítóadathoz (csak rövidítés – nincs külön eredeti).
+async function _tdBuildEditor(id) {
+    const box = document.getElementById('tdEd_' + id);
+    if (!box) return;
+    const key = 'td_' + id;
+    if (_dsEditors[key]) { try { dsEdStop(_dsEditors[key]); } catch (e) {} delete _dsEditors[key]; }
+    box.innerHTML = '<div style="font-size:12px;color:#999;padding:6px 0">Hullámforma betöltése…</div>';
+    let buf;
+    try {
+        const resp = await fetch(`/finetune/data/${id}/audio`);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        buf = await _dsCtx().decodeAudioData(await resp.arrayBuffer());
+    } catch (e) {
+        box.innerHTML = `<div style="font-size:12px;color:#c62828;padding:6px 0">Nem sikerült betölteni a hullámformát: ${esc(e.message)}</div>`;
+        return;
+    }
+    const dur = buf.duration;
+    const ed = {
+        sid: null, i: key, buffer: buf,
+        winStart: 0, winEnd: dur, origStart: 0, origEnd: dur,
+        markStart: 0, markEnd: dur,
+        playing: false, src: null, raf: null,
+        playStartCtx: 0, playBaseOffset: 0, pauseOffset: 0,
+        peaks: null, peaksW: 0,
+    };
+    _dsMountEditor(ed, box, false);
+}
+
+function _tdStopEditors() {
+    for (const k of Object.keys(_dsEditors)) {
+        if (String(k).startsWith('td_')) {
+            try { dsEdStop(_dsEditors[k]); } catch (e) {}
+            delete _dsEditors[k];
+        }
+    }
+}
+
+function _dsComputePeaks(ed, w) {
+    const data = ed.buffer.getChannelData(0);
+    const N = data.length;
+    const peaks = new Array(w);
+    for (let x = 0; x < w; x++) {
+        const s = Math.floor(x / w * N);
+        const e = Math.min(N, Math.floor((x + 1) / w * N));
+        let mn = 1.0, mx = -1.0;
+        for (let k = s; k < e; k++) {
+            const v = data[k];
+            if (v < mn) mn = v;
+            if (v > mx) mx = v;
+        }
+        if (e <= s) { mn = 0; mx = 0; }
+        peaks[x] = [mn, mx];
+    }
+    ed.peaks = peaks;
+    ed.peaksW = w;
+}
+
+function _dsTimeToX(ed, t, W) {
+    return (t - ed.winStart) / (ed.winEnd - ed.winStart) * W;
+}
+
+function _dsDraw(ed) {
+    const wrap   = document.getElementById('dsWave_' + ed.i);
+    const canvas = document.getElementById('dsCanvas_' + ed.i);
+    if (!wrap || !canvas) return;
+    const W = wrap.clientWidth, H = wrap.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width  = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    if (ed.peaksW !== W || !ed.peaks) _dsComputePeaks(ed, W);
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#0d1b2a';
+    ctx.fillRect(0, 0, W, H);
+
+    const mid = H / 2;
+    const startX = _dsTimeToX(ed, ed.markStart, W);
+    const endX   = _dsTimeToX(ed, ed.markEnd, W);
+
+    // Hullámforma – a kijelölésen belül világos, kívül halvány
+    for (let x = 0; x < W; x++) {
+        const [mn, mx] = ed.peaks[x];
+        const inSel = (x >= startX && x <= endX);
+        ctx.strokeStyle = inSel ? '#5ec6ff' : '#37506b';
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, mid - mx * (mid - 2));
+        ctx.lineTo(x + 0.5, mid - mn * (mid - 2));
+        ctx.stroke();
+    }
+
+    // Kijelölésen kívüli rész sötétítése
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    if (startX > 0) ctx.fillRect(0, 0, startX, H);
+    if (endX < W)   ctx.fillRect(endX, 0, W - endX, H);
+
+    // Eredeti chunk-határok jelzése (szaggatott szürke)
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.setLineDash([3, 3]);
+    for (const ot of [ed.origStart, ed.origEnd]) {
+        const ox = _dsTimeToX(ed, ot, W);
+        ctx.beginPath(); ctx.moveTo(ox, 0); ctx.lineTo(ox, H); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // Fogantyúk pozicionálása
+    const h0 = document.getElementById('dsH0_' + ed.i);
+    const h1 = document.getElementById('dsH1_' + ed.i);
+    if (h0) h0.style.left = startX + 'px';
+    if (h1) h1.style.left = endX + 'px';
+
+    _dsUpdateLabels(ed);
+}
+
+function _dsUpdateLabels(ed) {
+    const len = document.getElementById('dsLen_' + ed.i);
+    const d0  = document.getElementById('dsD0_' + ed.i);
+    const d1  = document.getElementById('dsD1_' + ed.i);
+    if (len) len.textContent = `Hossz: ${(ed.markEnd - ed.markStart).toFixed(2)}s`;
+
+    const dStart = ed.markStart - ed.origStart;   // <0 = környezet hozzáadva, >0 = levágva
+    const dEnd   = ed.markEnd   - ed.origEnd;      // >0 = környezet hozzáadva, <0 = levágva
+    if (d0) {
+        if (dStart < -0.01)      { d0.className = 'pill add'; d0.textContent = `eleje: +${(-dStart).toFixed(2)}s környezet`; }
+        else if (dStart > 0.01)  { d0.className = 'pill cut'; d0.textContent = `eleje: −${dStart.toFixed(2)}s vágva`; }
+        else                     { d0.className = 'pill';     d0.textContent = `eleje: 0`; }
+    }
+    if (d1) {
+        if (dEnd > 0.01)         { d1.className = 'pill add'; d1.textContent = `vége: +${dEnd.toFixed(2)}s környezet`; }
+        else if (dEnd < -0.01)   { d1.className = 'pill cut'; d1.textContent = `vége: −${(-dEnd).toFixed(2)}s vágva`; }
+        else                     { d1.className = 'pill';     d1.textContent = `vége: 0`; }
+    }
+}
+
+function _dsAttachDrag(handleEl, ed, which) {
+    handleEl.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();   // ne induljon el a hullámforma-scrub is
+        dsEdStop(ed);          // a kijelölés változik → lejátszás leáll, pozíció nullázódik
+        const wrap = document.getElementById('dsWave_' + ed.i);
+        const minGap = 0.3;
+        const move = (ev) => {
+            const rect = wrap.getBoundingClientRect();
+            let x = ev.clientX - rect.left;
+            x = Math.max(0, Math.min(rect.width, x));
+            let t = ed.winStart + x / rect.width * (ed.winEnd - ed.winStart);
+            if (which === 0) {
+                t = Math.min(t, ed.markEnd - minGap);
+                t = Math.max(ed.winStart, t);
+                ed.markStart = t;
+            } else {
+                t = Math.max(t, ed.markStart + minGap);
+                t = Math.min(ed.winEnd, t);
+                ed.markEnd = t;
+            }
+            _dsDraw(ed);
+        };
+        const up = () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', up);
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+    });
+}
+
+// A hullámformán a lejátszófej egérrel húzható – így lehet a hanganyagban pozícionálni (scrub).
+// A pozíció a két csúszó közé van korlátozva (csak ott szól a hang). Ha húzás közben éppen
+// ment a lejátszás, a húzás végén onnan folytatódik.
+function _dsAttachSeek(wrap, ed) {
+    if (!wrap) return;
+    wrap.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        const ph = document.getElementById('dsPH_' + ed.i);
+        const wasPlaying = ed.playing;
+        // A húzás idejére a hangot leállítjuk (a pozíciót külön kezeljük), de NEM nullázzuk
+        if (ed.playing) {
+            if (ed.src) { try { ed.src.onended = null; ed.src.stop(); } catch (e) {} ed.src = null; }
+            if (ed.raf) { cancelAnimationFrame(ed.raf); ed.raf = null; }
+            ed.playing = false;
+            _dsSetPlayBtn(ed, false);
+        }
+        if (ph) ph.style.display = 'block';
+
+        const seekTo = (clientX) => {
+            const rect = wrap.getBoundingClientRect();
+            let x = clientX - rect.left;
+            x = Math.max(0, Math.min(rect.width, x));
+            let t = ed.winStart + x / rect.width * (ed.winEnd - ed.winStart);
+            t = Math.max(ed.markStart, Math.min(ed.markEnd, t));   // csak a kijelölésen belül
+            ed.pauseOffset = t - ed.markStart;
+            if (ph) ph.style.left = _dsTimeToX(ed, t, rect.width) + 'px';
+        };
+        seekTo(e.clientX);
+
+        const move = (ev) => seekTo(ev.clientX);
+        const up = () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', up);
+            if (wasPlaying) dsEdPlayPause(ed.i);   // folytatás az új pozícióról
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+    });
+}
+
+// Lejátszás / szünet váltás. A hang csak a két csúszó között szól, és szüneteltethető –
+// szünet után onnan folytatódik, ahol megállt.
+function dsEdPlayPause(i) {
+    const ed = _dsEditors[i];
+    if (!ed) return;
+    if (ed.playing) { _dsEdPause(ed); return; }
+
+    const ctx = _dsCtx();
+    if (ctx.state === 'suspended') ctx.resume();
+
+    const total = ed.markEnd - ed.markStart;
+    let offset = ed.pauseOffset;
+    if (offset >= total - 0.01) offset = 0;   // ha a végén állt meg, elölről indul
+
+    const src = ctx.createBufferSource();
+    src.buffer = ed.buffer;
+    src.connect(ctx.destination);
+    src.start(0, (ed.markStart - ed.winStart) + offset, total - offset);
+    src.onended = () => { if (ed.src === src) dsEdStop(ed); };
+
+    ed.src = src;
+    ed.playing = true;
+    ed.playBaseOffset = offset;
+    ed.playStartCtx = ctx.currentTime;
+
+    _dsSetPlayBtn(ed, true);
+    const ph   = document.getElementById('dsPH_' + i);
+    const wrap = document.getElementById('dsWave_' + i);
+    if (ph) ph.style.display = 'block';
+
+    const animate = () => {
+        if (!ed.playing) return;
+        const pos = ed.playBaseOffset + (ctx.currentTime - ed.playStartCtx);
+        if (pos >= total) { dsEdStop(ed); return; }
+        if (ph && wrap) ph.style.left = _dsTimeToX(ed, ed.markStart + pos, wrap.clientWidth) + 'px';
+        ed.raf = requestAnimationFrame(animate);
+    };
+    ed.raf = requestAnimationFrame(animate);
+}
+
+// Szünet – a lejátszófej a helyén marad, a pozíciót megjegyezzük a folytatáshoz
+function _dsEdPause(ed) {
+    if (!ed || !ed.playing) return;
+    const ctx = _dsCtx();
+    const pos = ed.playBaseOffset + (ctx.currentTime - ed.playStartCtx);
+    ed.pauseOffset = Math.max(0, Math.min(pos, ed.markEnd - ed.markStart));
+    ed.playing = false;
+    if (ed.src) { try { ed.src.onended = null; ed.src.stop(); } catch (e) {} ed.src = null; }
+    if (ed.raf) { cancelAnimationFrame(ed.raf); ed.raf = null; }
+    _dsSetPlayBtn(ed, false);
+}
+
+// Teljes leállítás – pozíció nullázódik, lejátszófej eltűnik
+function dsEdStop(ed) {
+    if (!ed) return;
+    ed.playing = false;
+    ed.pauseOffset = 0;
+    if (ed.src) { try { ed.src.onended = null; ed.src.stop(); } catch (e) {} ed.src = null; }
+    if (ed.raf) { cancelAnimationFrame(ed.raf); ed.raf = null; }
+    _dsSetPlayBtn(ed, false);
+    const ph = document.getElementById('dsPH_' + ed.i);
+    if (ph) ph.style.display = 'none';
+}
+
+function _dsSetPlayBtn(ed, playing) {
+    const btn = document.getElementById('dsPlayBtn_' + ed.i);
+    if (btn) btn.textContent = playing ? '⏸ Szünet' : '▶ Lejátszás';
+}
+
+function dsEdReset(i) {
+    const ed = _dsEditors[i];
+    if (!ed) return;
+    dsEdStop(ed);
+    ed.markStart = ed.origStart;
+    ed.markEnd   = ed.origEnd;
+    _dsDraw(ed);
+}
+
 </script>
 </body>
 </html>

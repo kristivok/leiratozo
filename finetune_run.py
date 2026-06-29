@@ -46,13 +46,60 @@ def log(msg):
     print(msg, flush=True)
 
 
+MAX_MIN_PER_SOURCE = float(os.environ.get("FINETUNE_MAX_MIN_PER_SOURCE", "0"))  # 0 = nincs sapka
+
+
 def load_samples():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT id, audio_fn, transcript FROM training_data ORDER BY id")
-    rows = c.fetchall()
+    try:
+        c.execute("SELECT id, audio_fn, transcript, duration_s, source FROM training_data ORDER BY id")
+        rows = c.fetchall()
+        out = [{"id": r[0], "audio_fn": r[1], "transcript": r[2],
+                "duration_s": r[3] or 0.0, "source": r[4]} for r in rows]
+    except sqlite3.OperationalError:
+        # Régi séma (még nincs duration_s/source oszlop)
+        c.execute("SELECT id, audio_fn, transcript FROM training_data ORDER BY id")
+        out = [{"id": r[0], "audio_fn": r[1], "transcript": r[2],
+                "duration_s": 0.0, "source": None} for r in c.fetchall()]
     conn.close()
-    return [{"id": r[0], "audio_fn": r[1], "transcript": r[2]} for r in rows]
+    return out
+
+
+def cap_per_source(samples):
+    """Forrásonkénti felső sapka: ha egy anyagból túl sok van, alulmintavételezzük,
+    hogy a modell ne tanuljon félre egyetlen dominánssá váló forrásra.
+
+    A FINETUNE_MAX_MIN_PER_SOURCE env percben adja a sapkát (0 = kikapcsolva).
+    Ismeretlen forrású minták nincsenek korlátozva."""
+    if MAX_MIN_PER_SOURCE <= 0:
+        return samples
+    import random
+    cap_s = MAX_MIN_PER_SOURCE * 60.0
+    by_src = {}
+    for s in samples:
+        by_src.setdefault(s.get("source") or "__ismeretlen__", []).append(s)
+
+    kept = []
+    for src, items in by_src.items():
+        total = sum(it.get("duration_s") or 0 for it in items)
+        if src == "__ismeretlen__" or total <= cap_s:
+            kept.extend(items)
+            continue
+        rnd = random.Random(42)
+        rnd.shuffle(items)
+        acc, sel = 0.0, []
+        for it in items:
+            d = it.get("duration_s") or 0
+            if acc + d > cap_s and sel:
+                break
+            sel.append(it)
+            acc += d
+        log(f"  Forrás-sapka: '{src}' {total/60:.1f}p → {acc/60:.1f}p ({len(sel)}/{len(items)} minta)")
+        kept.extend(sel)
+
+    kept.sort(key=lambda s: s["id"])
+    return kept
 
 
 def mark_used(sample_ids, run_id):
@@ -87,6 +134,10 @@ def run_finetune(run_id: int):
     if not samples:
         log("Nincs felhasználható tanítóadat – leállok.")
         return False
+    if MAX_MIN_PER_SOURCE > 0:
+        before = len(samples)
+        samples = cap_per_source(samples)
+        log(f"Forrás-sapka aktív ({MAX_MIN_PER_SOURCE:.0f} p/forrás): {before} → {len(samples)} minta")
     log(f"Tanítóminták: {len(samples)} db")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -4,6 +4,8 @@ Magyar nyelvű hangfájl-leiratozó webalkalmazás, amely **pyannote** beszélő
 
 Több felhasználó egyszerre is használhatja: a feldolgozás **sorban (queue)** zajlik, és bármely látogató valós időben láthatja az éppen zajló leiratozás előrehaladását.
 
+> A jelentősebb funkcióváltozások időrendben: [`CHANGELOG.md`](CHANGELOG.md).
+
 ---
 
 ## Architektúra
@@ -240,7 +242,7 @@ A `/finetune` aloldalon egyenként tölthető fel hanganyag (max. 30 mp) és a h
 
 ### Feltöltött tanítóadatok szerkesztése
 
-A feltöltött tanítóadatok táblázatában minden sorra kattintva legördül egy szerkesztő panel, ahol a teljes leirat módosítható. A mentés azonnal frissíti az adatbázist és a táblázat előnézetét is. A `POST /finetune/data/<id>/edit` endpoint kezeli a mentést.
+A feltöltött tanítóadatok táblázatában minden sorra kattintva legördül egy szerkesztő panel, ahol a teljes leirat módosítható, **és egy hullámforma-szerkesztő is megjelenik a minta rövidítéséhez** (pl. a már feltöltött hosszú anyagok elejének/végének levágása). A szerkesztő ugyanaz, mint a diarizáló darabolónál (lejátszás a csúszók közt, scrub, igazodó szövegdoboz), de itt **csak rövidíteni** lehet – nincs külön eredeti felvétel, amiből környezeti hangot lehetne hozzáadni, így a levágott rész nem állítható vissza. A „Mentés (szöveg + vágás)" gomb a leiratot és a vágást is menti: a `POST /finetune/data/<id>/edit` a szöveget, a `POST /finetune/data/<id>/trim` pedig a WAV-ot vágja helyben és frissíti a hosszt.
 
 ### Tanítóadat gyűjtése – tömeges feltöltés
 
@@ -308,8 +310,8 @@ A `/finetune` oldal **Diarizáló daraboló** szekciója hosszú, többszereplő
    - Whisper-rel leiratozza a teljes hanganyagot (szegmens-szintű timestampekkel)
    - Minden szegmenshez hozzárendeli a domináns bemondót (speaker purity alapján)
    - Mondathatárokon (`.!?`) és bemondóváltásoknál **12–25 mp-es darabokra** csomagolja az anyagot (max. 28,5 mp – Whisper 30 mp-es ablaka alatt marad)
-3. Megjelennek a chunkok: minden darabhoz audio lejátszó + szerkeszthető szöveg mező
-4. Meghallgatod, javítod a szöveget, majd importálod a tanítóadatba
+3. Megjelennek a chunkok: minden darabhoz audio lejátszó, **hullámforma-szerkesztő** (vágás / környezeti hang) + szerkeszthető szöveg mező
+4. Meghallgatod, hullámforma alapján pontosan vágod az elejét/végét, javítod a szöveget, majd importálod a tanítóadatba
 
 **Átfedő (egymásra beszélős) szakaszok:**
 
@@ -327,9 +329,29 @@ Minden chunknál van egy piros „✕ Törlés" gomb – a törölt chunk elhalv
 
 A lista felett bemondónként megjelenik egy törlés gomb (pl. `✕ SPEAKER_01 törlése (8 db, 3.2 p)`). Hasznos telefonbeszélgetéseknél, ahol csak a stúdióban lévő bemondó hangja alkalmas betanításra.
 
+**Hullámforma-szerkesztő – vágás és környezeti hang:**
+
+Minden aktív chunknál a darab alatt **alapból megjelenik** egy beépített hullámforma-szerkesztő (nincs külön „sima" audio lejátszó, és nem kell külön gombra kattintani – a hullámformák a lista megnyitásakor automatikusan, egymás után betöltődnek). Ezzel pontosan állítható a darab eleje és vége: az elvágott szavakat és a felesleges részeket ki lehet vágni, illetve környezeti hangot lehet adni a darab elejéhez és végéhez, hogy a betanítandó minta tisztább legyen.
+
+A szerkesztő **külső könyvtár nélkül** (Web Audio API + `<canvas>`) működik, így offline szerveren is teljesen önálló:
+
+- **Hullámforma:** a darab köré a rendszer az **eredeti felvételből** kivág egy ±6 mp-es ablakot, és kirajzolja a hullámformát. A két szaggatott szürke vonal a darab eredeti határait jelzi.
+- **Két sárga csúszó:** befelé húzva levágja a felesleges/elvágott részt, kifelé húzva környezeti hangot ad az elejéhez/végéhez (az eredeti felvételből). A csúszók alatti címkék élőben mutatják a változást: `eleje: +0.40s környezet` (zöld) vagy `vége: −0.25s vágva` (narancs), valamint az eredő hosszt.
+- **▶ Lejátszás / ⏸ Szünet:** a lejátszás **csak a két csúszó között** szól (pontos `AudioBufferSourceNode`, mozgó lejátszófejjel) – a vágóponton kívüli részeket sosem játssza le. Szüneteltethető (onnan folytatódik, ahol megállt), és a végpontnál automatikusan megáll. A csúszók mozgatása leállítja a lejátszást.
+- **Húzható lejátszófej (scrub):** a hullámformára kattintva / húzva a lejátszási pont mozgatható (görgetés a hangban). A pozíció a két csúszó közé van korlátozva; ha húzás közben épp ment a lejátszás, a húzás végén az új pontról folytatódik.
+- **Igazodó szövegdoboz:** a leirat szerkesztőmezője automatikusan a szöveg hosszához nő (nem kell kézzel nagyítani az olvasáshoz).
+- **↺ Eredeti:** visszaállítja a csúszókat a darab eredeti határaira.
+- **Mentés:** nincs külön „vágás mentése" gomb – a darab alatti **„Mentés (szöveg + vágás)"** gomb egyszerre menti a leiratot és (ha a csúszók elmozdultak) a beállított vágást is. Vágáskor a chunk WAV újravágódik, és csak az adott darab hullámformája töltődik újra, a többi érintetlen marad.
+
+**Fontos – nem destruktív forrás:** a vágás mindig az érintetlen **eredeti hangfájlból** készül (amit a session mappa megőriz), nem a már levágott chunkból. Így vágás után is bármikor újra ki lehet bővíteni a darabot a környezeti hangba. Mentéskor frissül a chunk `start`/`end`/`duration_s` értéke a `state.json`-ban. Ha a chunk **már importálva lett**, a mentés a `training_data/` mappába másolt példányt és a DB `duration_s` mezőjét is újravágja/frissíti, hogy a tanítóadat konzisztens maradjon.
+
 **Importálás:**
 
 Az „Összes importálása tanítóadatba" gomb az összes aktív (nem törölt, nem üres szövegű) chunkot beírja a `training_data` táblába és átmásolja a WAV fájlt a `training_data/` mappába.
+
+**Nem duplikál:** az import chunkonként figyeli az `imported` flaget (a session `state.json`-jában), és a már importáltakat kihagyja – újra rányomva sem keletkezik kettőzött minta.
+
+**Javítás szinkronizálása:** ha egy **már importált** chunkon utólag javítod a **szöveget** vagy a **vágást** (és mented), a változás a tanítóadatba másolt példányon is érvényesül (a `training_data` leiratát / WAV-ját és hosszát frissíti, nem hoz létre új mintát). Mivel ilyenkor a tartalom megváltozik, a korábbi **modell-audit eredménye (WER/loss) törlődik** az adott mintán (újra kell auditálni). Ugyanez igaz a „Feltöltött tanítóadatok" tábla szerkesztésére/vágására is.
 
 **ZIP letöltés:**
 
@@ -337,7 +359,7 @@ A „↓ ZIP letöltése" gomb az összes chunk WAV + TXT párját ZIP archívum
 
 **Korábbi darabolások:**
 
-Az oldal alján megjelenik a korábbi session-ök listája. A „Megnyitás" gombbal bármelyik visszatölthető.
+Az oldal alján megjelenik a korábbi session-ök **görgethető** listája. A „Megnyitás" gombbal bármelyik visszatölthető. A darabolások **tartósan megmaradnak** (a `diar_split_sessions/<sid>/` mappában, újraindítás után is) – a listából **nincs törlés**, hogy egy korábbi darabolás se vesszen el.
 
 **Parancssori használat (`diar_sentence_split.py`):**
 
@@ -371,7 +393,7 @@ diar_split_sessions/<session_id>/
 ├── <eredeti_fajl>.mp3           # feltöltött hanganyag
 ├── diarization_result.json      # pyannote kimenet (cachelve)
 ├── manifest.json                # chunk metaadat lista
-├── state.json                   # session állapot (chunks, deleted, imported)
+├── state.json                   # session állapot (chunks: start/end/duration_s, deleted, imported, imported_dest)
 ├── chunk_0000_SPEAKER_00.wav
 ├── chunk_0000_SPEAKER_00.txt
 ├── chunk_0001_SPEAKER_01.wav
@@ -379,6 +401,37 @@ diar_split_sessions/<session_id>/
 ```
 
 > A `diar_split_sessions/` mappa **nem része a publikus repónak**.
+
+### Tanítóadat minőség-osztályozás
+
+A `/finetune` oldal **Tanítóadat minőség** kártyája megjelöli, mely minták javíthatják a modellt
+(✅ jó), és melyek vihetik félre a tanulást (⛔ árthat / ⚠ gyanús). A hangsúly a „biztosan árt"
+eseteken van, hogy egy hibás vagy túlreprezentált anyag ne tanítsa félre a modellt.
+
+**Két szint:**
+
+1. **Heurisztikus (azonnali, GPU nélkül)** – `training_quality.py`. Szöveg + időtartam alapú jelek:
+   - **cps (karakter/másodperc)**: extrém érték → audio↔szöveg eltérés (pl. `cps=73` = a szöveg sokszorosa annak, ami elhangozhat → ⛔).
+   - **hossz**: `>29s` (Whisper 30s-os ablakán túl → csonkolt tanítás) vagy `<1s` → ⛔.
+   - **ismétlési hurok / hallucináció** (a `clean_hallucination` logikájával), **üres leirat**, **sok szám/írásjel**.
+   - **duplikátum**: ugyanaz a leiratszöveg többször → ⚠.
+2. **Modell-audit (GPU, gombbal indítható)** – `training_audit.py`. Az **aktív** Whisper modellel végigmegy
+   minden mintán, és per-mintára **WER**-t (a modell átirata vs. a tárolt referencia) és **loss**-t mér.
+   Magas WER → valószínű hibás címke; magas loss → a modell a tanítás ellenére sem illeszti.
+   Ezzel a **már betanításra használt** minták közül is kiderül, melyek vitték félre a tanulást.
+   Az eredmény a `training_data.audit_wer / audit_loss / audit_at` oszlopokba kerül, és beépül az osztályozásba.
+   A finomhangolás alatt nem indítható (GPU-ütközés).
+
+A jelölés **tájékoztató** – a tanítást nem módosítja, a gyenge mintákat a táblázatban kézzel törölheted.
+
+**Forrás-túlsúly és sapka:**
+
+A minták forrását (`source` oszlop) a feltöltéskor tároljuk (diar session / feltöltött fájlnév); a
+régi mintákat egyszeri best-effort visszatöltés tölti ki (leiratszöveg-egyezés a diar session-ökkel,
+különben fájlnévből). A panel forrásonkénti megoszlást mutat, és figyelmeztet, ha egy forrás a
+hanganyag `QUALITY_SOURCE_WARN_PCT`%-át (alap: 30%) meghaladja. A `FINETUNE_MAX_MIN_PER_SOURCE`
+(perc/forrás, `0`=ki) bekapcsolásával a `finetune_run.py` **alulmintavételezi** a domináns forrásokat,
+hogy egyetlen anyag se tanítsa félre a modellt (ismeretlen forrásúak nincsenek korlátozva).
 
 ---
 
@@ -420,6 +473,10 @@ A loss futások között **nem hasonlítható össze közvetlenül** – több v
 | `uploaded_at` | Feltöltés időpontja |
 | `duration_s` | Hanganyag hossza másodpercben |
 | `used_in_run` | Melyik futásban lett először felhasználva (0 = még nem) |
+| `source` | Minta forrása túlsúly-méréshez (`diar:<fájl>` / `feltöltés:<név>`) |
+| `audit_wer` | Modell-audit: WER a modell átirata vs. referencia (NULL = nem auditált) |
+| `audit_loss` | Modell-audit: per-minta loss |
+| `audit_at` | Audit időpontja |
 
 ### `finetune_runs` DB tábla
 
@@ -507,6 +564,8 @@ Az első `python app.py` indításkor a program bekéri és `.env`-be menti a sz
 | `FINETUNE_LORA_RANK` | LoRA rang | `32` |
 | `FINETUNE_LORA_ALPHA` | LoRA alpha | `64` |
 | `FINETUNE_MAX_STEPS` | Max lépések (`0`=korlátlan) | `0` |
+| `FINETUNE_MAX_MIN_PER_SOURCE` | Forrásonkénti felső sapka a tanításnál percben (`0`=ki) | `0` |
+| `QUALITY_SOURCE_WARN_PCT` | Túlsúly-figyelmeztetés küszöbe (egy forrás a hanganyag ennyi %-a fölött) | `30` |
 
 ### VRAM és pontosság – ASR (átirat)
 
@@ -575,7 +634,12 @@ journalctl -u transcriber -f
 | `/finetune/data` | GET | Feltöltött minták listája (JSON) |
 | `/finetune/data/<id>/edit` | POST | Minta leiratának szerkesztése |
 | `/finetune/data/<id>/delete` | POST | Minta törlése |
+| `/finetune/data/<id>/audio` | GET | Minta hangja ID alapján (hullámforma-szerkesztőhöz) |
+| `/finetune/data/<id>/trim` | POST | Feltöltött minta WAV-jának rövidítése helyben (`{start, end}`) |
 | `/finetune/audio/<filename>` | GET | Hanganyag letöltése |
+| `/finetune/quality` | GET | Minőség-osztályozás: összegzés, forráseloszlás, megjelölt minták |
+| `/finetune/audit/start` | POST | GPU modell-audit indítása (per-minta WER + loss) |
+| `/finetune/audit/status` | GET | Audit állapota, log, auditált/összes |
 | `/finetune/status` | GET | Státusz, log, futási előzmények |
 | `/finetune/trigger` | POST | Finomhangolás kézi indítása |
 | `/finetune/stop` | POST | Futó finomhangolás leállítása |
@@ -590,6 +654,8 @@ journalctl -u transcriber -f
 | `/finetune/diar-split/status/<sid>` | GET | Feldolgozás állapota, log, chunkok |
 | `/finetune/diar-split/sessions` | GET | Korábbi session-ök listája |
 | `/finetune/diar-split/audio/<sid>/<fn>` | GET | Chunk WAV fájl kiszolgálása |
+| `/finetune/diar-split/segment/<sid>/<idx>` | GET | Hullámforma-ablak az eredeti hangból (±`pad` mp, WAV 16kHz mono). Az ablak/chunk határokat `X-Window-Start/End` és `X-Chunk-Start/End` fejlécekben adja vissza |
+| `/finetune/diar-split/trim/<sid>/<idx>` | POST | Chunk újravágása az eredeti hangból (`{start, end}` abszolút mp). Importált chunknál a `training_data/` példányt és a DB hosszt is frissíti |
 | `/finetune/diar-split/save/<sid>/<idx>` | POST | Egyedi chunk átirat mentése |
 | `/finetune/diar-split/toggle-delete/<sid>` | POST | Chunk(ok) törlése / visszaállítása |
 | `/finetune/diar-split/import/<sid>` | POST | Aktív chunkok importálása tanítóadatba |
@@ -664,8 +730,10 @@ leiratozo/
 ├── diar_batch_import.py             # Batch import javított chunkokból
 ├── finetune_chunks.py               # Finomhangoláshoz: chunk előkészítő
 ├── finetune_prepare.py              # Finomhangoláshoz: mappa előkészítő
-├── finetune_run.py                  # Finomhangolás futtatója (LoRA)
+├── finetune_run.py                  # Finomhangolás futtatója (LoRA) – forrás-sapkával
 ├── finetune_transcript.py           # Finomhangoláshoz: leirat-előkészítő
+├── training_quality.py              # Tanítóadat minőség-heurisztikák (cps, hossz, ismétlés, WER…)
+├── training_audit.py                # GPU modell-audit: per-minta WER + loss a tanítóadaton
 ├── split_news.py                    # Hírszegmensek darabolása feltöltés előtt
 ├── check_gpu.py                     # GPU ellenőrzés
 ├── transcriber.service              # systemd service unit

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv, set_key
 from pydub import AudioSegment
+import training_quality
 
 app = Flask(__name__)
 BASE_DIR        = Path(__file__).resolve().parent
@@ -605,6 +606,12 @@ def _ft_init_db():
         duration_s  REAL,
         used_in_run INTEGER DEFAULT 0
     )""")
+    # Minőség-osztályozáshoz: forrás (túlreprezentáció) + modell-audit eredmények
+    for col in ("source TEXT", "audit_wer REAL", "audit_loss REAL", "audit_at TEXT"):
+        try:
+            c.execute(f"ALTER TABLE training_data ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
     c.execute("""CREATE TABLE IF NOT EXISTS finetune_runs (
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
         started_at   TEXT,
@@ -831,11 +838,28 @@ def _split_seg_by_silence(seg, paragraphs):
     return [(seg[bounds[i]:bounds[i + 1]], paragraphs[i]) for i in range(n)]
 
 
-def _save_training_sample(audio_fn, transcript, duration_s):
+def _derive_source(audio_fn, original_fn=None):
+    """Forrás-azonosító a túlreprezentáció méréséhez.
+
+    A feltöltött eredeti fájlnévből (ha van), különben a mentett fájlnévből.
+    A diarizáló darabolóból jövő chunk_* nevek session nélkül 'diar:ismeretlen'-né esnek
+    (a backfill próbálja visszafejteni a session-t leiratszöveg-egyezés alapján)."""
+    base = Path(original_fn).stem if original_fn else Path(audio_fn or "").stem
+    if not original_fn and base.startswith("chunk_"):
+        return "diar:ismeretlen"
+    # batch nevek (hirek_001) és duplikátum-utótagok (_1) levágása
+    base = re.sub(r"(_\d+)+$", "", base)
+    base = re.sub(r"[\s_-]*\d+$", "", base).strip() or (Path(audio_fn or "").stem)
+    return "feltöltés:" + base
+
+
+def _save_training_sample(audio_fn, transcript, duration_s, source=None):
+    if source is None:
+        source = _derive_source(audio_fn)
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("INSERT INTO training_data (audio_fn, transcript, uploaded_at, duration_s) VALUES (?,?,?,?)",
-              (audio_fn, transcript, datetime.now().isoformat(), duration_s))
+    c.execute("INSERT INTO training_data (audio_fn, transcript, uploaded_at, duration_s, source) VALUES (?,?,?,?,?)",
+              (audio_fn, transcript, datetime.now().isoformat(), duration_s, source))
     conn.commit()
     conn.close()
 
@@ -890,7 +914,8 @@ def finetune_upload():
                 pfx  = datetime.now().strftime("%Y%m%d%H%M%S%f")[:18]
                 cfn  = f"{pfx}_{i:03d}_{Path(audio.filename).stem}.wav"
                 chunk_seg.export(str(TRAINING_DATA_DIR / cfn), format="wav")
-                _save_training_sample(cfn, chunk_text, dur)
+                _save_training_sample(cfn, chunk_text, dur,
+                                      source=_derive_source(None, original_fn=audio.filename))
                 saved += 1
             return jsonify({"ok": True, "split": True, "chunks": saved,
                             "split_method": split_method,
@@ -909,29 +934,112 @@ def finetune_upload():
             pass
         return jsonify({"error": f"Hangfájl feldolgozási hiba: {e}"})
 
-    _save_training_sample(wav_fn, transcript, duration_s)
+    _save_training_sample(wav_fn, transcript, duration_s,
+                          source=_derive_source(None, original_fn=audio.filename))
     return jsonify({"ok": True, "duration_s": round(duration_s, 1)})
 
 
 @app.route("/finetune/data")
 def finetune_data():
+    _ensure_sources_backfilled()
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("""SELECT id, audio_fn, transcript, uploaded_at, duration_s, used_in_run
+    c.execute("""SELECT id, audio_fn, transcript, uploaded_at, duration_s, used_in_run,
+                        source, audit_wer, audit_loss
                  FROM training_data ORDER BY id DESC""")
     rows = c.fetchall()
     conn.close()
-    return jsonify({"items": [{
-        "id": r[0], "audio_fn": r[1],
-        "transcript": r[2], "uploaded_at": r[3],
-        "duration_s": round(r[4] or 0, 1),
-        "used": bool(r[5]),
-    } for r in rows]})
+    items = []
+    for r in rows:
+        q = training_quality.classify(r[2], r[4], r[7], r[8])
+        items.append({
+            "id": r[0], "audio_fn": r[1],
+            "transcript": r[2], "uploaded_at": r[3],
+            "duration_s": round(r[4] or 0, 1),
+            "used": bool(r[5]),
+            "source": r[6] or "",
+            "quality": q["label"], "reasons": q["reasons"],
+            "audited": r[7] is not None,
+        })
+    return jsonify({"items": items})
 
 
 @app.route("/finetune/audio/<path:filename>")
 def finetune_audio(filename):
     return send_from_directory(str(TRAINING_DATA_DIR), filename)
+
+
+def _resolve_training_path(audio_fn):
+    """A training_data.audio_fn lehet csak fájlnév vagy teljes út is (diar import)."""
+    p = Path(audio_fn or "")
+    if p.is_absolute() and p.exists():
+        return p
+    return TRAINING_DATA_DIR / p.name
+
+
+@app.route("/finetune/data/<int:item_id>/audio")
+def finetune_data_audio(item_id):
+    """Egy tanítóminta hangja az ID alapján – robusztusan feloldva (a hullámforma-szerkesztőhöz)."""
+    conn = sqlite3.connect(DB_FILE)
+    row = conn.execute("SELECT audio_fn FROM training_data WHERE id=?", (item_id,)).fetchone()
+    conn.close()
+    if not row:
+        return "Not found", 404
+    path = _resolve_training_path(row[0])
+    if not path.exists():
+        return "Not found", 404
+    return send_from_directory(str(path.parent), path.name)
+
+
+@app.route("/finetune/data/<int:item_id>/trim", methods=["POST"])
+def finetune_data_trim(item_id):
+    """A feltöltött minta WAV-jának rövidítése [start, end]-re (a fájlon belül, helyben).
+
+    Nincs külön eredeti felvétel, ezért ez csak rövidítés (a levágott rész nem állítható vissza)."""
+    conn = sqlite3.connect(DB_FILE)
+    row = conn.execute("SELECT audio_fn FROM training_data WHERE id=?", (item_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Nem található."})
+    path = _resolve_training_path(row[0])
+    if not path.exists():
+        conn.close()
+        return jsonify({"error": "A hangfájl hiányzik."})
+
+    body = request.json or {}
+    try:
+        start = float(body["start"])
+        end   = float(body["end"])
+    except (KeyError, TypeError, ValueError):
+        conn.close()
+        return jsonify({"error": "Hiányzó vagy hibás start/end."})
+
+    total = _ffprobe_duration_s(path) or end
+    start = max(0.0, min(start, total))
+    end   = max(0.0, min(end, total))
+    if end - start < 0.2:
+        conn.close()
+        return jsonify({"error": "A kijelölt szakasz túl rövid (min. 0.2s)."})
+
+    tmp = path.with_suffix(".trim.wav")
+    try:
+        _ffmpeg_extract(path, tmp, start, end)
+        os.replace(str(tmp), str(path))
+    except Exception as e:
+        try:
+            Path(tmp).unlink(missing_ok=True)
+        except Exception:
+            pass
+        conn.close()
+        return jsonify({"error": f"Vágás sikertelen: {e}"})
+
+    dur = round(end - start, 3)
+    # a hang változott → a korábbi audit (WER/loss) elavult, töröljük
+    conn.execute("UPDATE training_data SET duration_s=?, audit_wer=NULL, audit_loss=NULL, audit_at=NULL WHERE id=?",
+                 (dur, item_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "duration_s": dur})
 
 
 @app.route("/finetune/data/<int:item_id>/edit", methods=["POST"])
@@ -941,7 +1049,9 @@ def finetune_edit(item_id):
         return jsonify({"error": "A leirat nem lehet üres."})
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("UPDATE training_data SET transcript=? WHERE id=?", (text, item_id))
+    # a leirat változott → a korábbi audit (WER/loss) elavult, töröljük
+    c.execute("UPDATE training_data SET transcript=?, audit_wer=NULL, audit_loss=NULL, audit_at=NULL WHERE id=?",
+              (text, item_id))
     if c.rowcount == 0:
         conn.close()
         return jsonify({"error": "Nem található."})
@@ -1225,6 +1335,146 @@ def diar_split_audio(session_id, filename):
     return send_from_directory(str(sess_dir), filename)
 
 
+def _ffprobe_duration_s(path):
+    """Az eredeti hangfájl teljes hossza másodpercben (ffprobe, gyors – csak fejlécet olvas)."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(out.stdout.strip())
+    except Exception:
+        return None
+
+
+def _ffmpeg_extract(src, dst_or_pipe, start_s, end_s):
+    """Az eredeti hangból kivág egy [start_s, end_s] szakaszt 16kHz mono WAV-ként.
+
+    dst_or_pipe == "pipe:1" esetén bytes-ot ad vissza, egyébként a megadott fájlba ír.
+    Bemeneti seekkel (-ss az -i előtt) gyors még hosszú interjúknál is.
+    """
+    dur = max(0.05, end_s - start_s)
+    to_pipe = (str(dst_or_pipe) == "pipe:1")
+    cmd = [
+        "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+        "-ss", f"{start_s:.3f}", "-t", f"{dur:.3f}",
+        "-i", str(src), "-ac", "1", "-ar", "16000",
+    ]
+    if to_pipe:
+        cmd += ["-f", "wav", "pipe:1"]
+        r = subprocess.run(cmd, capture_output=True, timeout=120)
+        return r.stdout
+    else:
+        cmd += [str(dst_or_pipe)]
+        subprocess.run(cmd, capture_output=True, timeout=120, check=True)
+        return None
+
+
+@app.route("/finetune/diar-split/segment/<session_id>/<int:chunk_idx>")
+def diar_split_segment(session_id, chunk_idx):
+    """Az eredeti hanganyag egy ablakát [start-pad, end+pad] adja vissza 16kHz mono WAV-ként,
+    a hullámforma-szerkesztőhöz. A környezeti hang (pad) mindig az eredeti felvételből jön,
+    így a vágás után is bármikor vissza lehet bővíteni."""
+    from flask import Response
+    state = _ds_load_state(session_id)
+    if not state:
+        return "Not found", 404
+    chunks = state.get("chunks", [])
+    if chunk_idx < 0 or chunk_idx >= len(chunks):
+        return "Not found", 404
+    ch = chunks[chunk_idx]
+
+    sess_dir = DIAR_SPLIT_DIR / session_id
+    orig = sess_dir / state.get("original_fn", "")
+    if not orig.exists():
+        return "Original audio not found", 404
+
+    total = _ffprobe_duration_s(orig)
+    if not total:
+        total = float(ch.get("end", 0)) + 30.0
+
+    pad = float(request.args.get("pad", 6))
+    pad = max(0.0, min(pad, 15.0))
+    win_start = max(0.0, float(ch.get("start", 0)) - pad)
+    win_end   = min(total, float(ch.get("end", 0)) + pad)
+    if win_end <= win_start:
+        win_end = min(total, win_start + 1.0)
+
+    data = _ffmpeg_extract(orig, "pipe:1", win_start, win_end)
+    if not data:
+        return "Extract failed", 500
+
+    return Response(data, mimetype="audio/wav", headers={
+        "X-Window-Start": f"{win_start:.3f}",
+        "X-Window-End":   f"{win_end:.3f}",
+        "X-Total":        f"{total:.3f}",
+        "X-Chunk-Start":  f"{float(ch.get('start', 0)):.3f}",
+        "X-Chunk-End":    f"{float(ch.get('end', 0)):.3f}",
+        "Access-Control-Expose-Headers": "X-Window-Start,X-Window-End,X-Total,X-Chunk-Start,X-Chunk-End",
+        "Cache-Control": "no-store",
+    })
+
+
+@app.route("/finetune/diar-split/trim/<session_id>/<int:chunk_idx>", methods=["POST"])
+def diar_split_trim(session_id, chunk_idx):
+    """Újravágja a chunk WAV-ot az eredeti hangból a megadott [start, end] határok közt.
+    A vágás/bővítés mindig az eredeti felvételhez képest értelmezett (abszolút másodperc)."""
+    state = _ds_load_state(session_id)
+    if not state:
+        return jsonify({"error": "Ismeretlen session."})
+    chunks = state.get("chunks", [])
+    if chunk_idx < 0 or chunk_idx >= len(chunks):
+        return jsonify({"error": "Érvénytelen chunk index."})
+    ch = chunks[chunk_idx]
+
+    body = request.json or {}
+    try:
+        new_start = float(body["start"])
+        new_end   = float(body["end"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "Hiányzó vagy hibás start/end."})
+
+    sess_dir = DIAR_SPLIT_DIR / session_id
+    orig = sess_dir / state.get("original_fn", "")
+    if not orig.exists():
+        return jsonify({"error": "Az eredeti hangfájl nem található."})
+
+    total = _ffprobe_duration_s(orig) or (new_end + 30.0)
+    new_start = max(0.0, min(new_start, total))
+    new_end   = max(0.0, min(new_end, total))
+    if new_end - new_start < 0.2:
+        return jsonify({"error": "A kijelölt szakasz túl rövid (min. 0.2s)."})
+
+    wav_path = sess_dir / ch["wav"]
+    try:
+        _ffmpeg_extract(orig, wav_path, new_start, new_end)
+    except Exception as e:
+        return jsonify({"error": f"Vágás sikertelen: {e}"})
+
+    dur = round(new_end - new_start, 3)
+    ch["start"]      = round(new_start, 3)
+    ch["end"]        = round(new_end, 3)
+    ch["duration_s"] = dur
+
+    # Ha már importálva lett, a tanítóadatba másolt példányt és a DB hosszt is frissítjük
+    dest = ch.get("imported_dest")
+    if ch.get("imported") and dest and Path(dest).exists():
+        try:
+            _ffmpeg_extract(orig, dest, new_start, new_end)
+            conn = sqlite3.connect(DB_FILE)
+            # a hang változott → a korábbi audit (WER/loss) elavult, töröljük
+            conn.execute("UPDATE training_data SET duration_s=?, audit_wer=NULL, audit_loss=NULL, audit_at=NULL WHERE audio_fn=?",
+                         (dur, str(dest)))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    _ds_save_state(session_id, state)
+    return jsonify({"ok": True, "start": ch["start"], "end": ch["end"], "duration_s": dur})
+
+
 @app.route("/finetune/diar-split/save/<session_id>/<int:chunk_idx>", methods=["POST"])
 def diar_split_save(session_id, chunk_idx):
     state = _ds_load_state(session_id)
@@ -1234,10 +1484,26 @@ def diar_split_save(session_id, chunk_idx):
         return jsonify({"error": "Érvénytelen chunk index."})
 
     text      = (request.json or {}).get("text", "").strip()
-    txt_path  = DIAR_SPLIT_DIR / session_id / state["chunks"][chunk_idx]["txt"]
+    ch        = state["chunks"][chunk_idx]
+    txt_path  = DIAR_SPLIT_DIR / session_id / ch["txt"]
     txt_path.write_text(text + "\n", encoding="utf-8")
-    state["chunks"][chunk_idx]["text"] = text
+    ch["text"] = text
     _ds_save_state(session_id, state)
+
+    # Ha ez a chunk már importálva lett, a tanítóadatba másolt példány leiratát is frissítjük,
+    # hogy a javítás a modellhez hozzáadott anyagon is érvényesüljön (ne duplikáljon).
+    dest = ch.get("imported_dest")
+    if ch.get("imported") and dest:
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            # a tartalom változott → a korábbi audit (WER/loss) elavult, töröljük
+            conn.execute("UPDATE training_data SET transcript=?, audit_wer=NULL, audit_loss=NULL, audit_at=NULL WHERE audio_fn=?",
+                         (text, str(dest)))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
     return jsonify({"ok": True})
 
 
@@ -1281,12 +1547,14 @@ def diar_split_import(session_id):
             c += 1
 
         shutil.copy2(str(wav_src), str(dest))
+        src_label = "diar:" + (state.get("original_fn") or session_id)
         conn.execute(
-            "INSERT INTO training_data (audio_fn, transcript, uploaded_at, duration_s) VALUES (?,?,?,?)",
-            (str(dest), text, now, chunk["duration_s"])
+            "INSERT INTO training_data (audio_fn, transcript, uploaded_at, duration_s, source) VALUES (?,?,?,?,?)",
+            (str(dest), text, now, chunk["duration_s"], src_label)
         )
         conn.commit()
         chunk["imported"] = True
+        chunk["imported_dest"] = str(dest)
         imported += 1
 
     conn.close()
@@ -1355,6 +1623,213 @@ def diar_split_delete(session_id):
                 pass
     shutil.rmtree(str(sess_dir), ignore_errors=True)
     return jsonify({"ok": True})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TANÍTÓADAT MINŐSÉG-OSZTÁLYOZÁS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_sources_backfilled = False
+_sources_bf_lock    = threading.Lock()
+
+
+def _ensure_sources_backfilled():
+    """Egyszeri, best-effort forrás-visszatöltés a régi (source=NULL) mintákhoz.
+
+    A diarizáló session-ök state.json-jaiból próbál egyezést keresni a leiratszöveg alapján,
+    különben a fájlnévből vezeti le a forrást."""
+    global _sources_backfilled
+    if _sources_backfilled:
+        return
+    with _sources_bf_lock:
+        if _sources_backfilled:
+            return
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            c = conn.cursor()
+            rows = c.execute(
+                "SELECT id, audio_fn, transcript FROM training_data WHERE source IS NULL OR source=''"
+            ).fetchall()
+            if rows:
+                # leiratszöveg → diar forrás térkép
+                text_map = {}
+                try:
+                    for d in DIAR_SPLIT_DIR.iterdir():
+                        if not d.is_dir():
+                            continue
+                        st = _ds_load_state(d.name)
+                        if not st:
+                            continue
+                        src = "diar:" + (st.get("original_fn") or d.name)
+                        for ch in st.get("chunks", []):
+                            key = training_quality.norm_key(ch.get("text", ""))
+                            if key:
+                                text_map.setdefault(key, src)
+                except Exception:
+                    pass
+                for rid, fn, txt in rows:
+                    key = training_quality.norm_key(txt or "")
+                    src = text_map.get(key) or _derive_source(fn or "")
+                    c.execute("UPDATE training_data SET source=? WHERE id=?", (src, rid))
+                conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        _sources_backfilled = True
+
+
+@app.route("/finetune/quality")
+def finetune_quality():
+    _ensure_sources_backfilled()
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    rows = c.execute("""SELECT id, audio_fn, transcript, duration_s, source, audit_wer, audit_loss
+                        FROM training_data ORDER BY id DESC""").fetchall()
+    conn.close()
+
+    # Duplikátum-csoportok (azonos normalizált szöveg)
+    dup_count = {}
+    for r in rows:
+        key = training_quality.norm_key(r[2] or "")
+        if key:
+            dup_count[key] = dup_count.get(key, 0) + 1
+
+    counts = {"ok": 0, "warn": 0, "bad": 0}
+    total_min = 0.0
+    audited   = 0
+    flagged   = []
+    src_agg   = {}
+
+    for r in rows:
+        rid, fn, txt, dur, source, awer, aloss = r
+        dur = dur or 0
+        total_min += dur
+        if awer is not None:
+            audited += 1
+        source = source or "ismeretlen"
+        agg = src_agg.setdefault(source, {"count": 0, "sec": 0.0})
+        agg["count"] += 1
+        agg["sec"]   += dur
+
+        q = training_quality.classify(txt, dur, awer, aloss)
+        label, reasons = q["label"], list(q["reasons"])
+
+        # Duplikátum → legalább 'warn'
+        key = training_quality.norm_key(txt or "")
+        if key and dup_count.get(key, 0) > 1:
+            reasons.append(f"duplikátum ({dup_count[key]}× ugyanaz a szöveg)")
+            if label == "ok":
+                label = "warn"
+
+        counts[label] += 1
+        if label != "ok":
+            preview = (txt or "")[:60] + ("…" if txt and len(txt) > 60 else "")
+            flagged.append({
+                "id": rid, "source": source,
+                "duration_s": round(dur, 1), "cps": q["cps"],
+                "quality": label, "reasons": reasons, "preview": preview,
+                "audit_wer": round(awer, 3) if awer is not None else None,
+                "audit_loss": round(aloss, 3) if aloss is not None else None,
+            })
+
+    # ⛔ előre, majd cps szerint csökkenő
+    flagged.sort(key=lambda x: (0 if x["quality"] == "bad" else 1, -x["cps"]))
+
+    total_min_v = total_min / 60.0
+    warn_pct = int(os.environ.get("QUALITY_SOURCE_WARN_PCT", "30"))
+    sources = []
+    dominant, dominant_pct = None, 0.0
+    for src, a in sorted(src_agg.items(), key=lambda kv: kv[1]["sec"], reverse=True):
+        # total_min itt másodpercben gyűlt – a részarány a hangidő alapján
+        share = (a["sec"] / total_min * 100.0) if total_min else 0.0
+        if share > dominant_pct:
+            dominant, dominant_pct = src, share
+        sources.append({
+            "source": src, "count": a["count"],
+            "minutes": round(a["sec"] / 60.0, 1),
+            "share_pct": round(share, 1),
+            "over": share > warn_pct,
+        })
+
+    cap_min = float(os.environ.get("FINETUNE_MAX_MIN_PER_SOURCE", "0"))
+
+    with _audit_lock:
+        audit_running = _audit_job["running"]
+
+    return jsonify({
+        "summary": {
+            "ok": counts["ok"], "warn": counts["warn"], "bad": counts["bad"],
+            "total": len(rows), "total_min": round(total_min_v, 1),
+            "audited": audited, "audit_running": audit_running,
+        },
+        "cap_min_per_source": cap_min,
+        "source_warn_pct": warn_pct,
+        "sources": sources,
+        "overrep": {
+            "warn": bool(dominant and dominant_pct > warn_pct and total_min_v >= 10),
+            "dominant": dominant, "dominant_pct": round(dominant_pct, 1),
+            "threshold_pct": warn_pct,
+        },
+        "flagged": flagged,
+    })
+
+
+# ── GPU modell-audit (per-minta WER + loss) ────────────────────────────────────
+
+_audit_job  = {"running": False, "log": ["(még nem futott)"], "proc": None, "started_at": None}
+_audit_lock = threading.Lock()
+
+
+@app.route("/finetune/audit/start", methods=["POST"])
+def finetune_audit_start():
+    if _finetune_running:
+        return jsonify({"error": "A finomhangolás éppen fut – várd meg, mielőtt auditálsz (GPU-ütközés)."})
+    with _audit_lock:
+        if _audit_job["running"]:
+            return jsonify({"error": "Az audit már fut."})
+        _audit_job["running"]    = True
+        _audit_job["log"]        = ["Audit indul…"]
+        _audit_job["started_at"] = datetime.now().isoformat()
+
+    def _worker():
+        proc = subprocess.Popen(
+            [sys.executable, str(BASE_DIR / "training_audit.py")],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=os.environ.copy(),
+        )
+        with _audit_lock:
+            _audit_job["proc"] = proc
+        for raw in proc.stdout:
+            line = raw.rstrip()
+            if not line:
+                continue
+            with _audit_lock:
+                _audit_job["log"].append(line)
+                if len(_audit_job["log"]) > 400:
+                    _audit_job["log"] = _audit_job["log"][-400:]
+        proc.stdout.close()
+        rc = proc.wait()
+        with _audit_lock:
+            _audit_job["log"].append("=== Audit kész ===" if rc == 0 else f"=== HIBA (kód {rc}) ===")
+            _audit_job["running"] = False
+            _audit_job["proc"]    = None
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/finetune/audit/status")
+def finetune_audit_status():
+    with _audit_lock:
+        running  = _audit_job["running"]
+        log_tail = _audit_job["log"][-60:]
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    total    = c.execute("SELECT COUNT(*) FROM training_data").fetchone()[0]
+    audited  = c.execute("SELECT COUNT(*) FROM training_data WHERE audit_wer IS NOT NULL").fetchone()[0]
+    conn.close()
+    return jsonify({"running": running, "log_tail": log_tail,
+                    "total": total, "audited": audited})
 
 
 if __name__ == "__main__":
